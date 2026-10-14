@@ -1,4 +1,4 @@
-use crate::theme::MONO_FONT;
+use crate::theme::{MISSING_LINK, MONO_FONT, missing_link_underline};
 use gpui::{prelude::*, *};
 use opalglass::buffer::Buffer;
 use std::ops::Range;
@@ -29,6 +29,10 @@ struct CachedRow {
 }
 
 pub struct Editor {
+    #[cfg(test)]
+    pub(crate) render_count: usize,
+    #[cfg(test)]
+    pub(crate) first_paint_at: Option<std::time::Instant>,
     pub buffer: Buffer,
     pub focus: FocusHandle,
     single_line: bool,
@@ -49,6 +53,7 @@ pub struct Editor {
     cached_rows: Vec<CachedRow>,
     syntax_version: u64,
     pub source_links: Vec<Range<usize>>,
+    pub missing_links: Vec<Range<usize>>,
 }
 
 impl Editor {
@@ -67,6 +72,10 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            render_count: 0,
+            #[cfg(test)]
+            first_paint_at: None,
             buffer,
             focus: cx.focus_handle(),
             single_line,
@@ -87,6 +96,7 @@ impl Editor {
             cached_rows: Vec::new(),
             syntax_version: u64::MAX,
             source_links: Vec::new(),
+            missing_links: Vec::new(),
         }
     }
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -98,6 +108,7 @@ impl Editor {
         self.source_version = u64::MAX;
         self.cached_rows.clear();
         self.source_links.clear();
+        self.missing_links.clear();
         self.source_list.reset(0);
         self.scroll = px(0.);
         self.scroll_x = px(0.);
@@ -332,9 +343,10 @@ impl Editor {
             .line
             .clone()
     }
-    pub fn set_source_links(&mut self, links: Vec<Range<usize>>) {
+    pub fn set_source_links(&mut self, links: Vec<Range<usize>>, missing: Vec<Range<usize>>) {
         self.syntax_version = self.buffer.revision();
         self.source_links = links;
+        self.missing_links = missing;
         self.cached_rows.clear();
     }
     fn prepare_source(&mut self) {
@@ -344,6 +356,7 @@ impl Editor {
         if self.source_version != self.buffer.revision() {
             if self.syntax_version != self.buffer.revision() {
                 self.source_links.clear();
+                self.missing_links.clear();
             }
             let offset = self.source_list.logical_scroll_top();
             self.source_ranges = opalglass::document::source_rows(self.buffer.text());
@@ -402,6 +415,11 @@ impl Editor {
                 .iter()
                 .take_while(|r| r.start < range.end)
                 .collect();
+            let first_missing = self.missing_links.partition_point(|r| r.end <= range.start);
+            let missing: Vec<_> = self.missing_links[first_missing..]
+                .iter()
+                .take_while(|r| r.start < range.end)
+                .collect();
             for r in &links {
                 cuts.extend([r.start.max(range.start), r.end.min(range.end)]);
             }
@@ -417,15 +435,15 @@ impl Editor {
                 .map(|pair| TextRun {
                     len: pair[1] - pair[0],
                     font: font(MONO_FONT),
-                    color: rgb(
-                        if prefix == Some(&b'#') || links.iter().any(|r| r.contains(&pair[0])) {
-                            0xb8a5fa
-                        } else if prefix == Some(&b'>') {
-                            0x9bbfb3
-                        } else {
-                            0xd6d9e3
-                        },
-                    )
+                    color: rgb(if missing.iter().any(|r| r.contains(&pair[0])) {
+                        MISSING_LINK
+                    } else if prefix == Some(&b'#') || links.iter().any(|r| r.contains(&pair[0])) {
+                        0xb8a5fa
+                    } else if prefix == Some(&b'>') {
+                        0x9bbfb3
+                    } else {
+                        0xd6d9e3
+                    })
                     .into(),
                     background_color: (pair[0] >= selection.start && pair[1] <= selection.end)
                         .then(|| rgb(0x38496a).into()),
@@ -436,6 +454,12 @@ impl Editor {
                             thickness: px(1.),
                             color: Some(rgb(0xb6a1ff).into()),
                             wavy: false,
+                        })
+                        .or_else(|| {
+                            missing
+                                .iter()
+                                .any(|r| r.contains(&pair[0]))
+                                .then(missing_link_underline)
                         }),
                     strikethrough: None,
                 })
@@ -465,6 +489,10 @@ impl Editor {
             |_, _, _| (),
             move |bounds, _, window, cx| {
                 entity.update(cx, |editor, cx| {
+                    #[cfg(test)]
+                    editor
+                        .first_paint_at
+                        .get_or_insert_with(std::time::Instant::now);
                     let origin = bounds.origin + point(px(GUTTER), px(0.));
                     let active = editor.buffer.line_start(editor.buffer.cursor())
                         == editor.buffer.line_start(range.start);
@@ -684,6 +712,10 @@ impl Focusable for Editor {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.render_count += 1;
+        }
         self.prepare_source();
         let entity = cx.entity();
         let content = if self.single_line {
@@ -710,14 +742,19 @@ impl Render for Editor {
                                 let width =
                                     (bounds.size.width - px(PAD * 2. + GUTTER)).max(px(20.));
                                 if editor.source_width != width {
+                                    let had_width = editor.source_width > px(0.);
                                     editor.source_width = width;
                                     editor.cached_rows.clear();
-                                    let offset = editor.source_list.logical_scroll_top();
-                                    editor.source_list.splice(
-                                        0..editor.source_list.item_count(),
-                                        editor.source_ranges.len(),
-                                    );
-                                    editor.source_list.scroll_to(offset);
+                                    // The initial list is already unmeasured. Rebuilding
+                                    // every item again here doubles first-frame work.
+                                    if had_width {
+                                        let offset = editor.source_list.logical_scroll_top();
+                                        editor.source_list.splice(
+                                            0..editor.source_list.item_count(),
+                                            editor.source_ranges.len(),
+                                        );
+                                        editor.source_list.scroll_to(offset);
+                                    }
                                 }
                                 let _ = window;
                             });

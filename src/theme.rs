@@ -13,3 +13,13 @@ pub const MONO_FONT: &str = if cfg!(target_os = "windows") {
 } else {
     "DejaVu Sans Mono"
 };
+
+pub const MISSING_LINK: u32 = 0xf09a91;
+
+pub fn missing_link_underline() -> gpui::UnderlineStyle {
+    gpui::UnderlineStyle {
+        thickness: gpui::px(1.),
+        color: Some(gpui::rgb(MISSING_LINK).into()),
+        wavy: true,
+    }
+}

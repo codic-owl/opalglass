@@ -1,6 +1,6 @@
 //! Original editing model. All internal positions are UTF-8 byte boundaries;
 //! platform text services use the explicit UTF-16 conversion methods.
-use std::{collections::VecDeque, ops::Range, sync::Arc};
+use std::{cell::Cell, collections::VecDeque, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
 fn next_revision() -> u64 {
@@ -29,6 +29,13 @@ impl Edit {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CachedPosition {
+    revision: u64,
+    cursor: usize,
+    position: (usize, usize),
+}
+
 #[derive(Clone, Debug)]
 pub struct Buffer {
     state: Snapshot,
@@ -41,6 +48,7 @@ pub struct Buffer {
     pub marked: Option<Range<usize>>,
     composition_start: Option<Snapshot>,
     preferred_column: Option<usize>,
+    position_cache: Cell<Option<CachedPosition>>,
 }
 
 impl Buffer {
@@ -52,7 +60,11 @@ impl Buffer {
         let mut utf16 = 0;
         for line in text.split_inclusive('\n') {
             byte += line.len();
-            utf16 += line.encode_utf16().count();
+            utf16 += if line.is_ascii() {
+                line.len()
+            } else {
+                line.encode_utf16().count()
+            };
             if line.ends_with('\n') {
                 line_starts.push(byte);
                 line_utf16.push(utf16);
@@ -73,6 +85,7 @@ impl Buffer {
             marked: None,
             composition_start: None,
             preferred_column: None,
+            position_cache: Cell::new(None),
         }
     }
     pub fn text(&self) -> &str {
@@ -381,19 +394,48 @@ impl Buffer {
         self.byte_to_utf16(range.start)..self.byte_to_utf16(range.end)
     }
     pub fn line_column(&self) -> (usize, usize) {
-        (
+        if let Some(cached) = self.position_cache.get()
+            && cached.revision == self.revision
+            && cached.cursor == self.cursor()
+        {
+            return cached.position;
+        }
+        let position = (
             self.line_starts.partition_point(|&b| b <= self.cursor()),
             self.text()[self.line_start(self.cursor())..self.cursor()]
                 .graphemes(true)
                 .count()
                 + 1,
-        )
+        );
+        self.position_cache.set(Some(CachedPosition {
+            revision: self.revision,
+            cursor: self.cursor(),
+            position,
+        }));
+        position
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_position_tracks_unicode_cursor_edits_and_history() {
+        let mut buffer = Buffer::new("e\u{301}😀\nend");
+        buffer.move_to("e\u{301}😀".len(), false);
+        assert_eq!(buffer.line_column(), (1, 3));
+        assert_eq!(buffer.line_column(), (1, 3));
+        buffer.move_to(buffer.text().len(), false);
+        assert_eq!(buffer.line_column(), (2, 4));
+        buffer.replace(0..buffer.text().len(), "a\nb");
+        assert_eq!(buffer.line_column(), (2, 2));
+        buffer.undo();
+        assert_eq!(buffer.line_column(), (2, 4));
+        buffer.redo();
+        assert_eq!(buffer.line_column(), (2, 2));
+        buffer.move_to(0, false);
+        assert_eq!(buffer.line_column(), (1, 1));
+    }
     #[test]
     fn word_navigation_and_deletion_preserve_unicode_and_undo() {
         let text = "café e\u{301}lan,  世界\nnext";

@@ -1,10 +1,10 @@
 //! CPU-only document analysis. Built in the background, shared by UI frames.
 use crate::{
     document,
-    markdown::{self, Block, Span},
+    markdown::{self, Block, Span, WikiLink},
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{collections::BTreeSet, ops::Range, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Kind {
@@ -29,14 +29,34 @@ pub struct PreviewRow {
 
 #[derive(Default, Debug)]
 pub struct Prepared {
+    /// False only for the bounded preview shown on the first frame of opening.
+    pub complete: bool,
     pub rows: Vec<PreviewRow>,
     pub tags: Vec<String>,
     pub words: usize,
-    pub links: Vec<Range<usize>>,
+    pub links: Vec<WikiLink>,
     pub headings: Vec<(String, usize)>,
 }
 
 impl Prepared {
+    pub fn opening(source: &str) -> Self {
+        const INITIAL_BYTES: usize = 8 * 1024;
+        if source.len() <= INITIAL_BYTES {
+            return Self::new(source);
+        }
+        let mut end = INITIAL_BYTES;
+        while !source.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Prefer a complete source line, without letting a very long first line
+        // force the entire document through the parser before its first frame.
+        if let Some(newline) = source[..end].rfind('\n') {
+            end = newline + 1;
+        }
+        let mut result = Self::new(&source[..end]);
+        result.complete = false;
+        result
+    }
     pub fn new(source: &str) -> Self {
         Self::new_cancellable(source, &AtomicBool::new(false)).unwrap()
     }
@@ -45,11 +65,9 @@ impl Prepared {
             return None;
         }
         let mut result = Self {
+            complete: true,
             words: source.split_whitespace().count(),
-            links: markdown::wiki_links(source)
-                .into_iter()
-                .map(|l| l.range)
-                .collect(),
+            links: markdown::wiki_links(source),
             ..Self::default()
         };
         let mut tags = BTreeSet::new();
@@ -140,6 +158,32 @@ impl Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opening_preview_is_bounded_and_short_notes_are_complete() {
+        let short = "# Hello\n\nText with [[Note]] and #tag.";
+        let small = Prepared::opening(short);
+        assert!(small.complete);
+        assert_eq!(small.tags, vec!["tag"]);
+        assert_eq!(small.links.len(), 1);
+
+        let large = format!("{short}\n\n{}", "More text 👩‍💻 e\u{301}.\n\n".repeat(10_000));
+        let initial = Prepared::opening(&large);
+        let full = Prepared::new(&large);
+        assert!(!initial.complete);
+        assert!(full.complete);
+        assert!(initial.rows.len() < full.rows.len() / 10);
+        for (early, complete) in initial.rows.iter().zip(&full.rows).take(10) {
+            assert_eq!(early.text, complete.text);
+        }
+        // A huge first line must also be bounded and tolerate a multibyte cut.
+        let initial = Prepared::opening(&"界".repeat(10_000));
+        assert!(!initial.complete);
+        assert!(initial.rows.iter().map(|r| r.text.len()).sum::<usize>() <= 8192);
+        let initial = Prepared::opening(&format!("```\n{}\n```", "code\n".repeat(10_000)));
+        assert!(!initial.complete);
+        assert!(initial.rows[0].code.as_ref().unwrap().len() < 8192);
+    }
+
     #[test]
     fn code_chunks_share_complete_literal_copy_text() {
         let code = "let message = \"你好 **literal**\";\n".repeat(100);

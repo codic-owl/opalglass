@@ -16,8 +16,13 @@ the application's dependency versions are recorded in `Cargo.lock`.
 cargo run --locked -- /path/to/your/vault
 ```
 
-Or run `cargo run --locked` and choose **Open vault**. A folder picker and a path
-entry dialog are both available. The selected directory must already exist.
+Or run `cargo run --locked` and choose **Open vault** (or press **Ctrl O**) to
+browse for your vault folder. If the system folder picker is unavailable, a path
+entry dialog appears instead. The selected directory must already exist.
+The development profile optimizes the app, GPUI, and the native font shaping,
+rasterization, and layout dependencies. Optimizing GPUI alone leaves native text
+rendering slow. The first build after a profile change recompiles those crates;
+subsequent builds reuse them.
 
 Try the sample vault without changing the included examples:
 
@@ -57,7 +62,9 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
   (including nested folders), folder creation, and tabs.
 - Per-vault sidebar expansion, scroll position, selection, width, and visibility.
 - Keyboard tree navigation, full-path hover tooltips, and on-demand active-note reveal.
-- File/folder rename and move with conflict checks, wiki-link updates, and open-tab migration.
+- Explorer context menus, inline naming, and drag-and-drop file/folder moves,
+  with conflict checks, wiki-link updates, and open-tab migration.
+- Draggable tabs with individual close buttons, middle-click closing, and keyboard switching.
 - Original text editing with soft wrapping, mouse selection, clipboard,
   grapheme-aware deletion, undo/redo, and GPUI input-method integration.
 - Source, split, and reading views with a native Markdown preview.
@@ -66,11 +73,18 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
 - A centered reading column with clearer heading, quote, and link styling;
   complete code-block copying and an empty-note writing action.
 - Wiki links, aliases, heading navigation, backlinks, and tag filtering.
+  Unresolved wiki links use coral text and a wavy underline in source and preview;
+  the styling updates when target notes are created, moved, or removed.
 - Search over saved note paths and contents; Enter opens the first result.
-- Background vault loading and debounced, cancellable full-text search.
+- Vault discovery that lists paths before reading note bodies, followed by
+  cancellable background content/backlink indexing. Notes can be opened and
+  edited while indexing runs; search results fill in automatically.
+- Debounced, cancellable full-text search.
 - Virtualized note navigation and indexed backlink lookup.
-- Background note loading, reloading, and Markdown analysis. Source and preview
-  render only visible rows; long lines and blocks use bounded display chunks.
+- Background note loading, reloading, and Markdown analysis. A new note shows
+  its full editable source and a bounded opening preview before full analysis.
+  Source and preview render only visible rows; long lines and blocks use bounded
+  display chunks.
 - Cached preview, tags, word count, and dirty status; delta-based undo history
   and indexed Unicode cursor/IME positions.
 - Atomic file replacement with external-change checks and a save-copy flow.
@@ -105,16 +119,51 @@ simulated UI, expanding every folder and scrolling to the last entry in the
 4,425-note test vault took about 13 ms; ten idle redraws took about 77 ms total.
 These are diagnostic CPU timings, not native GPU frame measurements.
 
-Select a folder, then use **+ New** or **+ Folder** to create inside it. With a file
-selected, creation uses its parent. **Select vault root** resets that destination.
-**Rename** changes the selected entry's name; **Move** takes a full vault-relative
-destination, including the file/folder name. The destination parent must exist.
-Right-clicking an entry selects it without opening it, so the toolbar can act on it.
+Right-click a folder for **New note**, **New folder**, **Rename…**, or
+**Move folder to…**. Right-click a note for **Rename…** or **Move file to…**.
+Right-click empty explorer space or the vault name to create at the vault root.
+Names are edited directly in the tree: Enter confirms, Escape cancels. Creation
+shortcuts use the selected folder, or the selected note's parent. Clicking the
+vault name sets the destination to the root without a separate action button.
+
+Drag a note or folder onto another folder to move it, or onto the vault name to
+move it to the root. Valid destinations highlight during dragging. A folder
+cannot be dropped into itself or its descendants. The **Move to…** menu action
+opens a searchable list of existing destination folders; `/` denotes the vault
+root. Use Up/Down and Enter, or click a destination. Moving preserves the item's
+name; use Rename to change it.
 
 With the tree focused, Up/Down select entries, Right expands or enters a folder,
 Left collapses or selects its parent, Home/End jump, and Enter opens a note or
 toggles a folder. Type a name to jump to a visible match; the prefix resets after
-800 ms. **F2** renames the selection. Reveal active note also focuses the tree.
+800 ms. **F2** renames the selection in the tree, or the active note when editing.
+**Shift F10** opens the selected entry's menu; Up/Down and Enter choose an action.
+Reveal active note also focuses the tree.
+
+Tabs activate on mouse press. Drag tabs to reorder them; the highlighted edge
+shows the insertion position, and the dragged note remains active.
+Each tab has a close button, and middle-click also closes a tab. Closing saves
+that tab first; a save conflict leaves it open and focuses it. Closing a
+background tab preserves the active document.
+
+The bottom bar shows the latest action's time in milliseconds: opening notes or
+vaults, switching/reordering/closing tabs, saving edits, and changing views.
+Hover over the timing to see the last 20 entries and the latest action's phase
+breakdown; click it to copy the full log with paths and phases for every entry.
+Opening reports worker queue, reading, preparation, UI dispatch, UI installation,
+frame wait, and rendering separately. Failed opens/saves and blocked closes are
+labeled explicitly.
+Timings run from the action handler to UI paint, including asynchronous loading
+and saving where applicable. They exclude GPU presentation and later background
+Markdown analysis or vault indexing. The history stays in memory for this session.
+
+These interactions follow Obsidian's documented
+[file explorer](https://obsidian.md/help/plugins/file-explorer),
+[note management](https://obsidian.md/help/manage-notes), and
+[tab navigation](https://obsidian.md/help/tabs) patterns for the supported actions.
+Ctrl N, F2, Ctrl Tab / Ctrl Shift Tab, and Ctrl 1–9 match those documented actions.
+Ctrl Shift N for folder creation and Shift F10 for the explorer menu are
+Opalglass shortcuts; they are not claimed as Obsidian defaults.
 
 Rename and move save open edits first and stop on conflicts. They run in the
 background while a progress overlay prevents edits or closing the window. Resolved
@@ -137,16 +186,19 @@ It is saved during the periodic refresh and on normal close or vault switch.
 
 | Shortcut | Action |
 | --- | --- |
-| Ctrl O | Open vault by path |
+| Ctrl O | Browse for a vault folder |
 | Ctrl N | New note in selected folder |
 | Ctrl Shift N | New folder in selected folder |
 | Ctrl B | Hide / show sidebar |
 | Ctrl Shift B | Reveal active note and focus tree |
-| F2 (tree focused) | Rename selection |
+| F2 | Rename tree selection / active note |
+| Shift F10 (tree focused) | Open context menu |
 | Ctrl P / Ctrl F | Focus vault search |
 | Ctrl S | Save active note |
 | Ctrl Shift S | Save a copy |
 | Ctrl W | Save and close active tab |
+| Ctrl Tab / Ctrl Shift Tab | Next / previous tab |
+| Ctrl 1–8 / Ctrl 9 | Select numbered tab / last tab |
 | Ctrl E | Cycle source / split / reading |
 | Ctrl Q | Save all and quit |
 | Ctrl A / C / X / V | Select all / copy / cut / paste |
@@ -158,7 +210,7 @@ It is saved during the periodic refresh and on normal close or vault switch.
 | Page Up / Page Down | Move by one viewport in source |
 | Shift Page Up / Shift Page Down | Extend selection by one viewport |
 | Ctrl Home / Ctrl End | Start / end of note |
-| Escape | Dismiss dialog |
+| Escape | Cancel inline naming, dismiss menu/dialog, or cancel drag |
 
 ## Verification
 
@@ -171,7 +223,8 @@ cargo build --release --locked
 
 The additional GPUI test-platform harness exercises input dispatch, editing,
 clipboard, saving, note creation, link navigation, search, conflict retention,
-folder actions, keyboard navigation, resize/hide, and per-vault state restoration:
+folder actions, context menus, inline naming, drag-and-drop moves, tab ordering and
+closing, keyboard navigation, resize/hide, and per-vault state restoration:
 
 ```sh
 cargo test --manifest-path ui-tests/Cargo.toml
@@ -209,7 +262,10 @@ Before calling this ready for daily use, run the UI harness and then manually:
 5. Change a dirty note externally and verify Save does not overwrite it.
 6. Save a copy, reload the original, then close the app.
 7. Check a real IME composition and clipboard exchange in a Linux desktop session.
-8. Check source line numbers, wrapped-line movement, and Page Up/Down at narrow
+8. Right-click files, folders, and empty explorer space. Create and rename inline,
+   drag files/folders to folders and the vault name, reorder tabs, and close a
+   dirty background tab. Check cancellation and conflicts.
+9. Check source line numbers, wrapped-line movement, and Page Up/Down at narrow
    and wide sizes. In reading mode, check the centered column and copy a long code block.
 
 ## Current boundaries
@@ -221,19 +277,36 @@ code and fenced code remain literal. Standard HTTP(S) and mail links open in the
 system browser on click; wiki links open local notes. Ambiguous bare note titles
 need an explicit vault-relative path.
 
-Search and incoming backlinks use saved contents. Initial loading reads all note
-contents into memory on a background thread; later scans read only changed files.
-Search results are reused until the query or vault changes. Full-text search still
+Search and incoming backlinks use saved contents. Opening a vault first scans
+file/folder names and builds the link resolver, without reading note bodies.
+The tree becomes available after that scan; opening a note reads that note on
+demand. Content and backlinks are indexed in the background, with progress shown
+in the status bar. Until indexing finishes, search matches paths and any already
+indexed notes, then automatically refreshes with body matches. Enter on a pending
+search waits for matching results. Existing links resolve from the path inventory,
+so links are not marked missing just because their contents haven't been indexed.
+
+Saving, creating, or moving a note supersedes stale indexing work. Switching
+vaults cancels the previous scan/index task, and partial or failed index results
+never replace the current snapshot. Rename/move still finishes a complete scan
+before updating wiki links. Later refreshes read only changed files. There is no
+persistent content index yet, so each launch eventually reads all note contents
+into memory. Search results are reused until the query or vault changes. Full-text search still
 scans the in-memory text. Notes use a contiguous text buffer, so inserting near
 the start of a large document still moves its suffix. Display row metadata is
 rebuilt after edits, but text shaping and preview layout are limited to visible
-content. Markdown analysis is debounced by 75 ms; the preview and word count may
-briefly show the previous revision while it runs. Stale results are discarded.
+content. Opening parses at most the first 8 KiB for its first preview and starts
+full analysis after the first paint. Code copying waits for a complete preview
+so it cannot silently copy a truncated block. Heading navigation beyond the
+opening excerpt completes when analysis is ready, and scroll position is retained.
+Analysis after edits is debounced by 75 ms; the preview and word count may briefly
+show the previous revision while it runs. Stale results are discarded. Leaving a
+partially analyzed note cancels its initial analysis until that tab is active again.
 Undo retains up to 200 edits within a 32 MiB changed-text budget, always retaining
 the latest edit even if it exceeds that budget. Durable save/conflict checks
 still complete synchronously before close or quit. There is
 no Obsidian plugin compatibility, graph view, live-preview editing, sync,
-attachment management, rename/delete UI, or session persistence yet.
+attachment management, deletion UI, or session persistence yet.
 
 Read-only performance measurements for a vault:
 
@@ -243,10 +316,22 @@ OPALGLASS_PROFILE_VAULT=/path/to/vault python3 scripts/offline_ui_tests.py \
   profile_vault_redraws -- --ignored --nocapture
 ```
 
-The second command measures the simulated GPUI interface in a debug build,
-including scrolling to the end of the note list; it does not measure GPU frames.
+The first command reports path discovery, background content/backlink indexing,
+unchanged refresh, and search separately. The second reports when the vault,
+first note, and full index become available in the simulated GPUI interface,
+plus redraws and scrolling. It uses the development profile and does not measure
+GPU frames.
 
-To profile note opening, redraws, editing, tab switches, and saving:
+In the October 14 startup check, a generated vault of 4,000 notes (47.4 MB, with
+repeated wiki links) took 2.09 s to load before these changes. Path discovery now
+takes about 11 ms, and content/backlink indexing takes another 0.98 s in the
+background. Duplicate targets within a note are resolved once when building
+backlinks. These are single-run storage-layer timings in a debug build with a
+warm filesystem cache; they exclude first-note parsing and native rendering,
+and are not a guarantee for other vaults or storage devices.
+
+To profile note opening, scrolling in Source/Reading/Split, redraws, editing,
+tab switches, and saving:
 
 ```sh
 OPALGLASS_PROFILE_NOTE=/path/to/large-note.md python3 scripts/offline_ui_tests.py \
@@ -255,7 +340,9 @@ OPALGLASS_PROFILE_NOTE=/path/to/large-note.md python3 scripts/offline_ui_tests.p
 
 This reads the specified note and operates on a temporary copy. Omit the
 environment variable for a reproducible 252 KB Markdown fixture. The measurements
-use the same debug simulated platform as the UI tests, not a native GPU session.
+use the same simulated platform and optimized app/GPUI development profile as
+the UI tests, not a native GPU session. The profiler reports first source paint
+separately from completion of full Markdown analysis.
 
 Measured in that harness during the October 13 performance audit:
 
@@ -267,8 +354,89 @@ Measured in that harness during the October 13 performance audit:
 
 Loading and analysis run on background tasks. Cached tab switches averaged
 5–7 ms; the large note's background preview update took 633 ms. These timings
-are diagnostic samples, not frame-rate guarantees. Native GPU behavior still
-needs verification on a Linux desktop.
+are diagnostic samples, not frame-rate guarantees. For native measurements,
+use the desktop benchmark below.
+
+Scrolling uses independently cached source, preview, explorer, and connection
+views. Incoming links and tags are displayed in a virtual list: offscreen links
+do not create buttons or participate in layout. The UI regression tests check
+that scrolling either text pane leaves the other views cached, for both short
+and long documents, and that the last backlink and tag remain reachable.
+
+To stress the connections panel with a generated vault (all writes are temporary):
+
+```sh
+OPALGLASS_PROFILE_BACKLINKS=2000 python3 scripts/offline_ui_tests.py \
+  profile_note_work -- --ignored --nocapture
+```
+
+In the October 14 debug simulated UI run, the 252 KB fixture with 2,000 incoming
+links took about 412 ms to open and 155–159 ms per scroll frame before these
+changes. Afterward, opening took about 107 ms and scrolling took about 5–6 ms
+per frame across Source, Reading, and both Split panes. These measurements
+exclude native GPU/compositor costs and vary by machine. The default fixture
+has no extra incoming links; `OPALGLASS_PROFILE_NOTE` also accepts a short note.
+
+After separating first paint from full analysis and optimizing the app/GPUI
+development builds, the latest October 14 opening measurements are:
+
+| Generated fixture | First source paint | Full analysis finished |
+| --- | ---: | ---: |
+| 57 bytes, 2,000 backlinks | 3.5 ms | 3.8 ms |
+| 252 KB, 2,000 backlinks | 6.3 ms | 17.1 ms |
+| 4.66 MB, 296,000 lines | 48.9 ms | 196 ms |
+
+These runs include reading the note from a warm local filesystem, creating its
+editable buffer, and drawing the first text in the simulated window. They are
+diagnostic samples, not a promise of a native frame rate. Both the staging and
+build optimization changed since the older measurements above. The normal
+`cargo run --locked -- /path/to/vault` command uses these optimizations.
+Regression tests cover first paint before bulk analysis, typing during opening,
+late heading navigation, and preventing truncated code copies.
+
+Tab transitions cache the cursor's line/column and each note's connection list,
+including its scroll position. Selecting an already active tab skips redraws.
+Saving an existing note updates only its changed outgoing backlink edges instead
+of rebuilding the whole vault index. Conflict checks still run before closing.
+
+To measure switching, opening an already active tab, and clean/dirty closing:
+
+```sh
+OPALGLASS_PROFILE_NOTE=/path/to/note.md OPALGLASS_PROFILE_BACKLINKS=2000 \
+  python3 scripts/offline_ui_tests.py profile_tab_work -- --ignored --nocapture
+```
+
+In the October 14 simulated UI run, three 660 KB single-line Unicode notes with
+2,000 backlinks switched in about 2–2.5 ms each across Source/Split/Reading,
+down from 12–14 ms. Closing a clean background tab took 1.2 ms, down from 12 ms;
+saving and closing a dirty tab took 5.5 ms. These are warm local filesystem
+samples; native GPU/compositor latency is not included.
+
+The simulated platform does not exercise Linux's real font shaping/rasterization
+stack. To test an actual desktop window with the native renderer and GPU:
+
+```sh
+OPALGLASS_PROFILE_BACKLINKS=2000 cargo run --locked --example native_profile
+```
+
+This opens a separate benchmark window, creates a temporary vault with two short
+notes and one note containing varied paragraphs, exercises opens/closes/switches,
+prints phase timings, and exits. Keep the window visible while it runs.
+Avoid interacting with the benchmark window until it exits.
+`OPALGLASS_PROFILE_NOTE=/path/to/note.md` uses a temporary copy of that note as
+the larger fixture. No original notes are edited.
+
+An October 14 native Wayland/KDE run on Intel MTL graphics reproduced a 159 ms
+open and 82–97 ms tab switches with varied text and 2,000 backlinks. Rendering
+accounted for 150 ms of that open; disk reading and preparation took under 1 ms.
+The development profile had optimized GPUI but left Cosmic Text, Rustybuzz,
+TTF parsing and Taffy unoptimized. Optimizing those dependencies reduced the
+same native workload to a 36 ms open (23 ms rendering) and 18 ms switches
+(about 4 ms rendering). These native samples include compositor frame scheduling
+but still stop before GPU presentation; they supersede simulated latency claims.
+The final build also optimizes Swash glyph rasterization. A follow-up with the
+302 KB varied-text fixture measured a 34 ms open and 13 ms tab switches; short
+notes opened in 8–14 ms. The native window was 950 × 1140 logical pixels.
 
 ## Layout and licensing
 

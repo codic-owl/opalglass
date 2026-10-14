@@ -1,12 +1,19 @@
 //! Read-only measurements against a real or generated vault.
 use opalglass::vault::Vault;
-use std::{hint::black_box, time::Instant};
+use std::{hint::black_box, sync::atomic::AtomicBool, time::Instant};
 
 fn main() {
     let root = std::env::args_os().nth(1).expect("vault path required");
     let start = Instant::now();
-    let mut vault = Vault::open(root).unwrap();
-    println!("open: {:?}; notes: {}", start.elapsed(), vault.notes.len());
+    let mut vault = Vault::discover(root, &AtomicBool::new(false)).unwrap();
+    println!(
+        "paths ready: {:?}; notes: {}",
+        start.elapsed(),
+        vault.notes.len()
+    );
+    let start = Instant::now();
+    vault.refresh().unwrap();
+    println!("content and backlinks indexed: {:?}", start.elapsed());
     let start = Instant::now();
     vault.refresh().unwrap();
     println!("unchanged refresh: {:?}", start.elapsed());

@@ -1,6 +1,6 @@
 use crate::markdown::{WikiLink, wiki_links};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -60,7 +60,7 @@ impl Note {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Indexes {
     paths: HashMap<PathBuf, usize>,
     titles: HashMap<String, Option<usize>>,
@@ -73,6 +73,7 @@ pub struct Vault {
     pub notes: Arc<Vec<Arc<Note>>>,
     pub folders: Arc<Vec<PathBuf>>,
     indexes: Arc<Indexes>,
+    content_indexed: bool,
 }
 
 #[derive(Debug)]
@@ -102,8 +103,36 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Vault loading cancelled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 impl Vault {
     pub fn open(root: impl AsRef<Path>) -> io::Result<Self> {
+        Self::scan_initial(root, true, &AtomicBool::new(false))
+    }
+    /// List paths and build the resolver without reading any note bodies.
+    /// Individual notes can be opened immediately; search bodies/backlinks are
+    /// filled by a subsequent background refresh.
+    pub fn discover(root: impl AsRef<Path>, cancelled: &AtomicBool) -> io::Result<Self> {
+        Self::scan_initial(root, false, cancelled)
+    }
+    pub fn content_indexed(&self) -> bool {
+        self.content_indexed
+    }
+    fn scan_initial(
+        root: impl AsRef<Path>,
+        contents: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        check_cancelled(cancelled)?;
         let root = root.as_ref().canonicalize()?;
         if !root.is_dir() {
             return Err(invalid("Choose a directory for the vault"));
@@ -113,20 +142,30 @@ impl Vault {
             notes: Arc::default(),
             folders: Arc::default(),
             indexes: Arc::default(),
+            content_indexed: false,
         };
-        vault.refresh()?;
+        vault.scan(contents, cancelled)?;
         Ok(vault)
     }
     /// Reuse unchanged notes, including their parsed links and text allocations.
     /// Returns false when no files changed, so the UI need not redraw.
     pub fn refresh(&mut self) -> io::Result<bool> {
+        self.refresh_cancellable(&AtomicBool::new(false))
+    }
+    pub fn refresh_cancellable(&mut self, cancelled: &AtomicBool) -> io::Result<bool> {
+        self.scan(true, cancelled)
+    }
+    fn scan(&mut self, contents: bool, cancelled: &AtomicBool) -> io::Result<bool> {
         fn visit(
             vault: &Vault,
             dir: &Path,
             notes: &mut Vec<Arc<Note>>,
             folders: &mut Vec<PathBuf>,
+            contents: bool,
+            cancelled: &AtomicBool,
         ) -> io::Result<()> {
             for entry in fs::read_dir(dir)? {
+                check_cancelled(cancelled)?;
                 let entry = entry?;
                 let kind = entry.file_type()?;
                 if kind.is_symlink() || entry.file_name().to_string_lossy().starts_with('.') {
@@ -135,13 +174,17 @@ impl Vault {
                 let path = entry.path();
                 if kind.is_dir() {
                     folders.push(path.strip_prefix(&vault.root).unwrap().into());
-                    visit(vault, &path, notes, folders)?;
+                    visit(vault, &path, notes, folders, contents, cancelled)?;
                 } else if kind.is_file()
                     && path
                         .extension()
                         .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 {
                     let relative = path.strip_prefix(&vault.root).unwrap();
+                    if !contents {
+                        notes.push(Arc::new(Note::new(relative.into(), String::new(), None)));
+                        continue;
+                    }
                     let stamp = Stamp::new(&entry.metadata()?);
                     if let Some(&index) = vault.indexes.paths.get(relative)
                         && vault.notes[index].stamp.as_ref() == Some(&stamp)
@@ -157,7 +200,15 @@ impl Vault {
         }
         let mut notes = Vec::new();
         let mut folders = Vec::new();
-        visit(self, &self.root, &mut notes, &mut folders)?;
+        check_cancelled(cancelled)?;
+        visit(
+            self,
+            &self.root,
+            &mut notes,
+            &mut folders,
+            contents,
+            cancelled,
+        )?;
         folders.sort();
         notes.sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
         let changed = folders != *self.folders
@@ -166,16 +217,27 @@ impl Vault {
                 .iter()
                 .zip(self.notes.iter())
                 .any(|(a, b)| !Arc::ptr_eq(a, b));
-        if changed {
-            self.notes = Arc::new(notes);
-            self.folders = Arc::new(folders);
-            self.reindex();
+        if changed || self.content_indexed != (contents || notes.is_empty()) {
+            // Build off to the side so cancellation never installs a partial
+            // resolver, incomplete backlink index, or half-read snapshot.
+            let mut next = self.clone();
+            next.content_indexed = contents || notes.is_empty();
+            next.notes = Arc::new(notes);
+            next.folders = Arc::new(folders);
+            next.reindex_cancellable(cancelled)?;
+            check_cancelled(cancelled)?;
+            *self = next;
+            return Ok(true);
         }
         Ok(changed)
     }
     fn reindex(&mut self) {
+        self.reindex_cancellable(&AtomicBool::new(false)).unwrap();
+    }
+    fn reindex_cancellable(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
         let mut indexes = Indexes::default();
         for (index, note) in self.notes.iter().enumerate() {
+            check_cancelled(cancelled)?;
             indexes.paths.insert(note.path.clone(), index);
             indexes
                 .titles
@@ -187,7 +249,13 @@ impl Vault {
         self.indexes = Arc::new(indexes);
         let mut incoming: HashMap<PathBuf, Vec<usize>> = HashMap::new();
         for (index, note) in self.notes.iter().enumerate() {
+            check_cancelled(cancelled)?;
+            let mut seen = HashSet::new();
             for link in &note.links {
+                check_cancelled(cancelled)?;
+                if !seen.insert(link.target.as_str()) {
+                    continue;
+                }
                 if let Some(target) = self.resolve(&note.path, &link.target)
                     && target != note.path
                 {
@@ -199,20 +267,51 @@ impl Vault {
             }
         }
         Arc::get_mut(&mut self.indexes).unwrap().incoming = incoming;
+        Ok(())
     }
     fn update_note(&mut self, path: &Path, text: &str) {
         // Revalidate a local write on the next scan. Sampling metadata after
         // replacement could accidentally cache a concurrent writer's timestamp
         // alongside our older text.
         let note = Arc::new(Note::new(path.into(), text.into(), None));
-        let notes = Arc::make_mut(&mut self.notes);
         if let Some(&index) = self.indexes.paths.get(path) {
-            notes[index] = note;
+            // Saving an existing path cannot change name resolution or note
+            // indices. Update only its outgoing edges, not the entire vault.
+            let targets = |note: &Note| {
+                let mut seen = HashSet::new();
+                note.links
+                    .iter()
+                    .filter(|link| seen.insert(link.target.as_str()))
+                    .filter_map(|link| self.resolve(&note.path, &link.target))
+                    .filter(|target| target != &note.path)
+                    .collect::<HashSet<_>>()
+            };
+            let old = targets(&self.notes[index]);
+            let new = targets(&note);
+            Arc::make_mut(&mut self.notes)[index] = note;
+            if old != new {
+                let indexes = Arc::make_mut(&mut self.indexes);
+                for target in old.difference(&new) {
+                    if let Some(sources) = indexes.incoming.get_mut(target) {
+                        sources.retain(|&source| source != index);
+                        if sources.is_empty() {
+                            indexes.incoming.remove(target);
+                        }
+                    }
+                }
+                for target in new.difference(&old) {
+                    let sources = indexes.incoming.entry(target.clone()).or_default();
+                    if let Err(position) = sources.binary_search(&index) {
+                        sources.insert(position, index);
+                    }
+                }
+            }
         } else {
+            let notes = Arc::make_mut(&mut self.notes);
             notes.push(note);
             notes.sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
+            self.reindex();
         }
-        self.reindex();
     }
     /// Paths must stay relative, visible and portable between Windows and Unix.
     pub fn note_path(name: &str) -> io::Result<PathBuf> {
@@ -635,6 +734,145 @@ pub fn moved_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn updating_existing_note_changes_only_its_backlinks_and_preserves_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("A", "[[Target]]"),
+            ("B", "[[Other]]"),
+            ("C", "[[Target]]"),
+            ("Other", ""),
+            ("Target", ""),
+        ] {
+            fs::write(dir.path().join(format!("{name}.md")), text).unwrap();
+        }
+        let mut vault = Vault::open(dir.path()).unwrap();
+        let snapshot = vault.clone();
+        vault.update_note(
+            Path::new("B.md"),
+            "[[Target]] [[Target|alias]] [[B]] [[missing]]",
+        );
+        let sources = |vault: &Vault, target| {
+            vault
+                .backlinks(Path::new(target))
+                .iter()
+                .map(|n| n.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sources(&vault, "Target.md"),
+            ["A.md", "B.md", "C.md"].map(PathBuf::from)
+        );
+        assert!(sources(&vault, "Other.md").is_empty());
+        assert!(sources(&vault, "B.md").is_empty());
+        assert_eq!(
+            sources(&snapshot, "Target.md"),
+            ["A.md", "C.md"].map(PathBuf::from)
+        );
+        assert_eq!(sources(&snapshot, "Other.md"), [PathBuf::from("B.md")]);
+        let indexes = vault.indexes.clone();
+        vault.update_note(Path::new("B.md"), "Edited [[Target#heading]]");
+        assert!(Arc::ptr_eq(&indexes, &vault.indexes));
+        vault.update_note(Path::new("B.md"), "removed links");
+        assert_eq!(
+            sources(&vault, "Target.md"),
+            ["A.md", "C.md"].map(PathBuf::from)
+        );
+    }
+    #[test]
+    fn discovery_resolves_paths_without_reading_contents_then_indexes_search_and_backlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("Folder/Empty")).unwrap();
+        fs::write(
+            dir.path().join("Folder/Source.md"),
+            "[[Target]] [[Target]] needle in body",
+        )
+        .unwrap();
+        fs::write(dir.path().join("Folder/Target.md"), "# Target").unwrap();
+        let mut vault = Vault::discover(dir.path(), &AtomicBool::new(false)).unwrap();
+        assert!(!vault.content_indexed());
+        assert!(
+            vault
+                .notes
+                .iter()
+                .all(|n| n.text.is_empty() && n.links.is_empty())
+        );
+        assert!(vault.folders.contains(&PathBuf::from("Folder/Empty")));
+        assert_eq!(
+            vault.resolve(Path::new("Folder/Source.md"), "Target"),
+            Some("Folder/Target.md".into())
+        );
+        assert_eq!(vault.search("Source").len(), 1);
+        assert!(vault.search("needle in body").is_empty());
+        assert_eq!(
+            vault.read(Path::new("Folder/Target.md")).unwrap(),
+            "# Target"
+        );
+        assert!(vault.refresh().unwrap());
+        assert!(vault.content_indexed());
+        assert_eq!(vault.search("needle in body").len(), 1);
+        assert_eq!(vault.backlinks(Path::new("Folder/Target.md")).len(), 1);
+        assert!(!vault.refresh().unwrap());
+    }
+    #[test]
+    fn discovery_survives_invalid_note_text_and_failed_indexing_preserves_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Broken.md"), [0xff, 0xfe]).unwrap();
+        let mut vault = Vault::discover(dir.path(), &AtomicBool::new(false)).unwrap();
+        let before = vault.clone();
+        assert_eq!(vault.notes.len(), 1);
+        assert!(vault.refresh().is_err());
+        assert!(!vault.content_indexed());
+        assert!(Arc::ptr_eq(&vault.notes, &before.notes));
+        assert!(Arc::ptr_eq(&vault.indexes, &before.indexes));
+        fs::write(dir.path().join("Broken.md"), "fixed").unwrap();
+        assert!(vault.refresh().unwrap());
+        assert!(vault.content_indexed());
+    }
+    #[test]
+    fn cancelled_discovery_and_indexing_do_not_install_partial_state() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("A.md"), "body").unwrap();
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            Vault::discover(dir.path(), &cancelled).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        let mut vault = Vault::discover(dir.path(), &AtomicBool::new(false)).unwrap();
+        let before = vault.clone();
+        assert_eq!(
+            vault.refresh_cancellable(&cancelled).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(Arc::ptr_eq(&vault.notes, &before.notes));
+        assert!(Arc::ptr_eq(&vault.indexes, &before.indexes));
+        assert!(!vault.content_indexed());
+    }
+    #[test]
+    fn saves_and_moves_from_discovered_vault_preserve_unindexed_links() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("A.md"), "[[B]]\r\n").unwrap();
+        fs::write(dir.path().join("B.md"), "target").unwrap();
+        fs::write(dir.path().join("C.md"), "[[B|Alias]]").unwrap();
+        let mut vault = Vault::discover(dir.path(), &AtomicBool::new(false)).unwrap();
+        let baseline = vault.read(Path::new("A.md")).unwrap();
+        vault
+            .save(Path::new("A.md"), &baseline, "edited [[B]]\r\n")
+            .unwrap();
+        assert!(!vault.content_indexed());
+        vault
+            .move_entry(Path::new("B.md"), Path::new("Renamed.md"))
+            .unwrap();
+        assert!(vault.content_indexed());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("A.md")).unwrap(),
+            "edited [[Renamed]]\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("C.md")).unwrap(),
+            "[[Renamed|Alias]]"
+        );
+    }
     #[test]
     fn rewrite_refuses_unaddressable_destination_before_writing() {
         let dir = tempfile::tempdir().unwrap();
