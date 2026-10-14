@@ -1,0 +1,25 @@
+name: Build and test
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
+      - name: Linux build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake pkg-config libssl-dev libfontconfig1-dev libfreetype6-dev
+          libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+          libvulkan-dev fonts-dejavu-core
+      - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path ui-tests/Cargo.toml -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Native interface tests
+        run: cargo test --manifest-path ui-tests/Cargo.toml
+

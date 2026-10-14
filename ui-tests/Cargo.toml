@@ -1,0 +1,13 @@
+[package]
+name = "opalglass-ui-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+opalglass = { path = ".." }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "3314de81755d7ef949007f6b804f4496092b0cc8", features = ["test-support"] }
+tempfile = "=3.23.0"
+
+[profile.dev]
+debug = 0

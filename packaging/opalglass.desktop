@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Opalglass
+Comment=A local Markdown workspace
+Exec=opalglass
+Icon=opalglass
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=opalglass
