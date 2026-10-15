@@ -75,11 +75,14 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
 - Wiki links, aliases, heading navigation, backlinks, and tag filtering.
   Unresolved wiki links use coral text and a wavy underline in source and preview;
   the styling updates when target notes are created, moved, or removed.
-- Search over saved note paths and contents; Enter opens the first result.
+- Ranked Tantivy search over saved note titles, paths and contents, with typo
+  tolerance and highlighted excerpts. ↑ / ↓ select a result; Enter opens it.
 - Vault discovery that lists paths before reading note bodies, followed by
   cancellable background content/backlink indexing. Notes can be opened and
   edited while indexing runs; search results fill in automatically.
-- Debounced, cancellable full-text search.
+- Persistent search indexes outside the vault, incremental updates after saves,
+  moves and external edits, and cancellable background queries. Excerpts load
+  only for visible results, using bounded file reads and a small cache.
 - Virtualized note navigation and indexed backlink lookup.
 - Background note loading, reloading, and Markdown analysis. A new note shows
   its full editable source and a bounded opening preview before full analysis.
@@ -105,6 +108,55 @@ second check immediately before atomic replacement. It is optimistic concurrency
 not a lock shared with other editors; a concurrent writer can still race the final
 check. Symlinks are skipped and rejected for note access.
 
+### Search
+
+Ordinary words match as AND across titles and bodies. Put the whole query in quotes
+for an exact token phrase; quoted phrases never use typo correction. A trailing
+`*` completes the last word, for example `gloss*`. Folder/path substring lookup is
+also supported. Title matches rank above body matches: complete titles, whole
+title words, final-word prefixes (at least three characters without `*`), title
+substrings, then sparse typo corrections. Thus `ilia` puts `Iliad` above notes
+containing `Ilia` only in their bodies, while `orphi` puts `Orphic` before
+`Trimorphic`. Body results follow, with whole words before sparse prefix and
+typo fallbacks. Known words are preserved in multiword typo correction. A
+complete exact title does not need fuzzy fallback; quoted searches remain exact.
+
+Results are limited to the top 100 (shown as `100+`); refine the query to narrow
+them. Queries support up to eight indexed words / 512 UTF-8 bytes. Mixed quoted
+clauses and advanced query operators are not supported yet. This is token search,
+so its matches differ from the old arbitrary-substring body scan. Saved contents
+are searched; unsaved edits enter the index after saving.
+
+Results arrive before excerpts. Only visible rows request snippets, reading at
+most 16 KiB from each original file. The index stores terms, positions, titles,
+paths and sparse byte-offset checkpoints, not a retrievable copy of note bodies.
+A bounded snippet cache validates source metadata before reuse. The bottom bar
+records Search (including a separate backend phase) and Search snippets timings.
+Typing has a 16 ms debounce; superseded queries and excerpts are discarded.
+
+On Linux the disposable search cache is under
+`$XDG_CACHE_HOME/opalglass/search`, or `~/.cache/opalglass/search`. Cache paths are
+also defined for Windows/macOS, although the desktop application currently targets
+Linux. Caches stay outside the vault. An unavailable, locked or incompatible cache
+falls back to a temporary session index. The app must finish its first index build
+before full-text search is available. Notes remain editable during that build.
+Saves and moves synchronize the index in the background; external changes are
+picked up by the existing three-second refresh. A changed or missing source file
+never reuses a stale excerpt. Unix ctime additionally detects same-length changes
+with restored mtime. Other platforms use size and mtime.
+
+To exercise search and scrolling in a real, read-only native window:
+
+```sh
+cargo run --release --locked --example native_search_profile -- /path/to/vault
+```
+
+This opens notes without editing them, waits for indexing, searches exact and
+misspelled terms, scrolls results, prints native first-paint timings, and exits.
+Keep the benchmark window visible. Cache and sidebar-state files may be written
+outside the vault; source notes are not changed. Backend tests use
+`cargo test --locked -p opalglass-search`; UI regressions use the existing harness.
+
 ## Sidebar
 
 Folders start collapsed. Click a folder to expand or collapse it. The active note
@@ -112,7 +164,7 @@ is highlighted; following links leaves the tree alone. **Reveal active note**
 (**Ctrl Shift B**) expands its parents and scrolls it into view. Drag the sidebar's
 right edge to resize it, or use **Ctrl B** / the **☰** button to hide or show it.
 
-Search displays a flat list with full relative paths. Clearing the search restores
+Search displays a ranked list with full relative paths and highlighted excerpts. Clearing the search restores
 the tree and its scroll position. Both lists are virtualized; expansion traverses
 cached folder entries and does no filesystem reads or Markdown parsing. In the
 simulated UI, expanding every folder and scrolling to the last entry in the
@@ -281,18 +333,19 @@ Search and incoming backlinks use saved contents. Opening a vault first scans
 file/folder names and builds the link resolver, without reading note bodies.
 The tree becomes available after that scan; opening a note reads that note on
 demand. Content and backlinks are indexed in the background, with progress shown
-in the status bar. Until indexing finishes, search matches paths and any already
-indexed notes, then automatically refreshes with body matches. Enter on a pending
+in the status bar. Until the first search index is ready, search matches paths, then automatically
+refreshes with ranked body matches. Reopening reuses the search index and checks
+source metadata; unchanged notes are not indexed again. Enter on a pending
 search waits for matching results. Existing links resolve from the path inventory,
 so links are not marked missing just because their contents haven't been indexed.
 
 Saving, creating, or moving a note supersedes stale indexing work. Switching
 vaults cancels the previous scan/index task, and partial or failed index results
 never replace the current snapshot. Rename/move still finishes a complete scan
-before updating wiki links. Later refreshes read only changed files. There is no
-persistent content index yet, so each launch eventually reads all note contents
-into memory. Search results are reused until the query or vault changes. Full-text search still
-scans the in-memory text. Notes use a contiguous text buffer, so inserting near
+before updating wiki links. Later refreshes read only changed files. Search uses a persistent Tantivy index and does not scan the in-memory text.
+The existing vault/backlink model still reads and retains note bodies separately;
+this integration does not yet remove that memory cache. Search results are reused
+until the query or vault changes. Notes use a contiguous text buffer, so inserting near
 the start of a large document still moves its suffix. Display row metadata is
 rebuilt after edits, but text shaping and preview layout are limited to visible
 content. Opening parses at most the first 8 KiB for its first preview and starts
@@ -442,7 +495,8 @@ notes opened in 8–14 ms. The native window was 950 × 1140 logical pixels.
 
 - `src/buffer.rs`: Unicode text, selection, history, and composition model.
 - `src/document.rs`: normalization and preservation of line endings.
-- `src/vault.rs`: vault storage, paths, search, link resolution, conflict checks.
+- `src/vault.rs`: vault storage, paths, link resolution, conflict checks.
+- `crates/search`: persistent Tantivy index, ranking, typo correction and snippets.
 - `src/markdown.rs`: original parser and link/tag extraction.
 - `src/prepared.rs`: cached preview rows, formatting spans, tags, and word counts.
 - `src/editor.rs`: GPUI text rendering, hit testing, keyboard and IME bridge.

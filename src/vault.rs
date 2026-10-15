@@ -684,6 +684,9 @@ impl Vault {
             .flatten()
             .map(|index| self.notes[index].path.clone())
     }
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.indexes.paths.contains_key(path)
+    }
     pub fn backlinks(&self, path: &Path) -> Vec<&Note> {
         self.indexes
             .incoming

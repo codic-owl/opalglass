@@ -6,6 +6,7 @@ description = "A local-first Markdown workspace, built with Rust and GPUI"
 license = "MIT"
 
 [dependencies]
+opalglass-search = { path = "crates/search" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "3314de81755d7ef949007f6b804f4496092b0cc8" }
 unicode-segmentation = "=1.12.0"
 tempfile = "=3.23.0"
@@ -45,3 +46,7 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[workspace]
+members = ["crates/search"]
+exclude = ["ui-tests", "prototypes/tantivy-search"]

@@ -1814,6 +1814,163 @@ mod workspace {
         }
 
         #[gpui::test]
+        fn search_starts_after_first_paint_with_preloaded_vault(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "already loaded contents").unwrap();
+            let vault = opalglass::vault::Vault::open(folder.path()).unwrap();
+            assert!(vault.content_indexed());
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(None, w, cx));
+            view.update_in(cx, |this, w, cx| {
+                this.finish_open(Ok((vault, Default::default())), w, cx);
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.search_ready(), "{}", this.status));
+        }
+
+        #[gpui::test]
+        fn indexed_search_ranks_typos_highlights_and_loads_only_visible_excerpts(
+            cx: &mut TestAppContext,
+        ) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(
+                folder.path().join("Glossary.md"),
+                "Glossary definitions and quartz.",
+            )
+            .unwrap();
+            std::fs::write(folder.path().join("Repeated.md"), "foo foo foo").unwrap();
+            for i in 0..60 {
+                std::fs::write(
+                    folder.path().join(format!("Note {i:02}.md")),
+                    format!("quartz sample number {i}."),
+                )
+                .unwrap();
+            }
+            let (view, cx) =
+                cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-p");
+            cx.simulate_input("glossry");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert!(this.search_ready(), "{}", this.status);
+                assert_eq!(this.search_results[0].title, "Glossary");
+                let snippet = this.search_results[0].snippet.as_ref().unwrap();
+                assert!(
+                    snippet
+                        .highlights
+                        .iter()
+                        .any(|r| &snippet.fragment[r.clone()] == "Glossary")
+                );
+            });
+            cx.simulate_keystrokes("ctrl-a");
+            cx.simulate_input("quartz");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert_eq!(this.search_results.len(), 61);
+                let loaded = this
+                    .search_results
+                    .iter()
+                    .filter(|r| r.snippet.is_some())
+                    .count();
+                assert!(loaded > 0 && loaded < 20, "{loaded} snippets for viewport");
+            });
+            view.update(cx, |this, cx| {
+                this.results_scroll
+                    .scroll_to_item(60, gpui::ScrollStrategy::Center);
+                this.sidebar.update(cx, |_, cx| cx.notify());
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert!(this.search_results[60].snippet.is_some())
+            });
+            cx.simulate_keystrokes("down enter");
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert_eq!(
+                    this.tabs[this.active].path,
+                    this.search_results[this.search_selected].path
+                )
+            });
+            cx.simulate_keystrokes("ctrl-p ctrl-a");
+            cx.simulate_input("\"foo foo\"");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert_eq!(
+                    this.search_results[0].snippet.as_ref().unwrap().highlights,
+                    vec![0..11]
+                )
+            });
+        }
+
+        #[gpui::test]
+        fn indexed_search_tracks_saved_external_renamed_and_removed_notes(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "alpha").unwrap();
+            let (view, cx) =
+                cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, cx| {
+                this.tabs[0]
+                    .editor
+                    .update(cx, |e, cx| e.set_text("nebula", cx));
+                assert!(this.save_tab(0, cx));
+            });
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-p");
+            cx.simulate_input("nebula");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert_eq!(this.search_results[0].path, PathBuf::from("A.md"))
+            });
+            std::fs::rename(folder.path().join("A.md"), folder.path().join("Moved.md")).unwrap();
+            std::fs::write(folder.path().join("Moved.md"), "supernova").unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-p ctrl-a");
+            cx.simulate_input("supernova");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert!(
+                    !this.search_results.is_empty(),
+                    "status={} ready={} rev={} index={} searching={} query={} paths={:?}",
+                    this.status,
+                    this.search_ready(),
+                    this.revision,
+                    this.index_revision,
+                    this.searching,
+                    this.search_query,
+                    this.vault
+                        .as_ref()
+                        .unwrap()
+                        .notes
+                        .iter()
+                        .map(|n| &n.path)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(this.search_results[0].path, PathBuf::from("Moved.md"));
+            });
+            std::fs::remove_file(folder.path().join("Moved.md")).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.search_results.is_empty()));
+        }
+
+        #[gpui::test]
         fn background_search_discards_old_queries_and_enter_waits_for_results(
             cx: &mut TestAppContext,
         ) {

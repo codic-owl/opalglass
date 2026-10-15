@@ -6,13 +6,14 @@ use opalglass::{
     markdown,
     navigation::{self, State as NavigationState, Tree},
     prepared::{Kind, Prepared, PreviewRow},
+    search::{Engine as SearchEngine, Hit as SearchHit, SearchIndex, Snippet, Snippets, Ticket},
     vault::Vault,
 };
 use std::{
     cell::Cell,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -111,6 +112,13 @@ struct TabDrag {
     title: String,
 }
 
+struct SearchRow {
+    path: PathBuf,
+    title: String,
+    hit: Option<Arc<SearchHit>>,
+    snippet: Option<Snippet>,
+}
+
 pub struct Workspace {
     vault: Option<Vault>,
     tabs: Vec<Tab>,
@@ -148,7 +156,15 @@ pub struct Workspace {
     _index: Option<Task<()>>,
     search_query: String,
     search_revision: u64,
-    search_results: Vec<usize>,
+    search_results: Vec<SearchRow>,
+    search_index: Option<Arc<SearchIndex>>,
+    search_engine: Option<Arc<SearchEngine>>,
+    search_error: Option<String>,
+    search_selected: usize,
+    snippet_cache: Arc<Mutex<Snippets>>,
+    _snippet_task: Option<Task<()>>,
+    snippets_loading: bool,
+    snippet_requests: Vec<usize>,
     searching: bool,
     open_search_result: bool,
     _search_task: Option<Task<()>>,
@@ -240,7 +256,7 @@ impl Workspace {
         ];
         let watch = cx.spawn(async |this, cx| {
             loop {
-                Timer::after(Duration::from_secs(3)).await;
+                cx.background_executor().timer(Duration::from_secs(3)).await;
                 let Ok(scan) = this.update(cx, |this, cx| {
                     this.persist_navigation(cx);
                     (!this.managing && !this.loading && !this.indexing)
@@ -315,6 +331,14 @@ impl Workspace {
             search_query: String::new(),
             search_revision: u64::MAX,
             search_results: Vec::new(),
+            search_index: None,
+            search_engine: None,
+            search_error: None,
+            search_selected: 0,
+            snippet_cache: Arc::new(Mutex::new(Snippets::default())),
+            _snippet_task: None,
+            snippets_loading: false,
+            snippet_requests: Vec::new(),
             searching: false,
             open_search_result: false,
             _search_task: None,
@@ -502,6 +526,18 @@ impl Workspace {
                 self.tree.rebuild(&vault, &self.navigation.expanded);
                 self.tree_revision = self.revision;
                 self.vault = Some(vault);
+                if let Some(index) = self.search_index.take() {
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop(index);
+                        })
+                        .detach();
+                }
+                self.search_engine = None;
+                self.search_error = None;
+                self.search_results.clear();
+                self.search_revision = u64::MAX;
+                self.snippet_cache = Arc::new(Mutex::new(Snippets::default()));
                 self.tabs.clear();
                 self.active = 0;
                 self.notes_scroll = UniformListScrollHandle::new();
@@ -545,12 +581,6 @@ impl Workspace {
             return;
         }
         let Some(vault) = &self.vault else { return };
-        if vault.content_indexed() {
-            if self.indexing {
-                self.cancel_indexing();
-            }
-            return;
-        }
         if self.index_revision == self.revision {
             return;
         }
@@ -559,32 +589,78 @@ impl Workspace {
         self.index_cancelled = Arc::new(AtomicBool::new(false));
         let cancelled = self.index_cancelled.clone();
         let revision = self.revision;
+        let generation = self.load_generation;
+        let existing = self.search_index.clone();
+        let cache = if cfg!(test) {
+            None
+        } else {
+            opalglass::search::cache_directory()
+        };
         self.index_revision = revision;
         self.indexing = true;
+        self.search_error = None;
         self._index = Some(cx.spawn(async move |this, cx| {
             let task_cancelled = cancelled.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    vault.refresh_cancellable(&cancelled)?;
-                    Ok::<_, std::io::Error>(vault)
+                    let changed = if !vault.content_indexed() {
+                        vault.refresh_cancellable(&cancelled)?
+                    } else {
+                        false
+                    };
+                    let index = match existing {
+                        Some(index) => index,
+                        None => Arc::new(
+                            SearchIndex::open(&vault.root, cache.as_deref())
+                                .map_err(std::io::Error::other)?,
+                        ),
+                    };
+                    let paths = vault
+                        .notes
+                        .iter()
+                        .map(|n| n.path.clone())
+                        .collect::<Vec<_>>();
+                    index
+                        .synchronize(&paths, &cancelled)
+                        .map_err(std::io::Error::other)?;
+                    let engine = Arc::new(index.snapshot().map_err(std::io::Error::other)?);
+                    Ok::<_, std::io::Error>((vault, changed, index, engine))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                // A save, create, move or vault switch supersedes this snapshot.
-                // The workspace observer restarts indexing from the current vault.
-                if task_cancelled.load(Ordering::Relaxed) || this.revision != revision {
+                if task_cancelled.load(Ordering::Relaxed)
+                    || this.revision != revision
+                    || this.load_generation != generation
+                {
                     return;
                 }
                 this.indexing = false;
                 match result {
-                    Ok(vault) => this.apply_scan(vault, revision, cx),
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => (),
-                    Err(error) => this.message(format!("Could not index vault: {error}"), true, cx),
+                    Ok((vault, changed, index, engine)) => {
+                        if changed {
+                            this.apply_scan(vault, revision, cx);
+                        }
+                        this.search_index = Some(index);
+                        this.search_engine = Some(engine);
+                        this.index_revision = this.revision;
+                        this.search_revision = u64::MAX;
+                    }
+                    Err(error) => {
+                        this.search_error = Some(error.to_string());
+                        this.search_revision = u64::MAX;
+                        this.message(format!("Could not update search: {error}"), true, cx);
+                    }
                 }
                 cx.notify();
             });
         }));
+    }
+    fn search_ready(&self) -> bool {
+        self.search_engine.is_some()
+            && !self.indexing
+            && self.index_revision == self.revision
+            && self.search_error.is_none()
     }
     fn persist_navigation(&mut self, cx: &mut Context<Self>) {
         self.navigation.scroll_y = self.notes_scroll.0.borrow().base_handle.offset().y.into();
@@ -738,11 +814,14 @@ impl Workspace {
         self.search_revision = self.revision;
         if query_changed {
             self.open_search_result = false;
+            self.search_selected = 0;
         }
         self.search_cancelled.store(true, Ordering::Relaxed);
         self.search_cancelled = Arc::new(AtomicBool::new(false));
         self._search_task = None;
-        self.search_results.clear();
+        self._snippet_task = None;
+        self.snippets_loading = false;
+        self.snippet_requests.clear();
         self.searching = false;
         if query_changed {
             self.results_scroll = UniformListScrollHandle::new();
@@ -750,34 +829,100 @@ impl Workspace {
         let Some(vault) = self.vault.clone() else {
             return;
         };
-        if self.search_query.is_empty() {
-            self.search_results = (0..vault.notes.len()).collect();
+        if self.search_query.trim().is_empty() {
+            self.search_results.clear();
             return;
         }
         self.searching = true;
+        // A saved/externally changed snapshot must finish updating before body
+        // results are used. During first indexing, path lookup remains available.
+        if self.search_engine.is_some() && !self.search_ready() && self.search_error.is_none() {
+            return;
+        }
+        let engine = self
+            .search_ready()
+            .then(|| self.search_engine.clone())
+            .flatten();
         let query = self.search_query.clone();
         let revision = self.revision;
         let cancelled = self.search_cancelled.clone();
+        let task_cancelled = cancelled.clone();
+        let started = Instant::now();
         self._search_task = Some(cx.spawn_in(window, async move |this, cx| {
-            // Debounce typing before scanning note bodies. Neither the scan nor
-            // Unicode case folding runs on the UI thread.
             cx.background_executor()
-                .timer(Duration::from_millis(150))
+                .timer(Duration::from_millis(16))
                 .await;
             let search_query = query.clone();
-            let results = cx
+            let (results, backend) = cx
                 .background_executor()
-                .spawn(async move { vault.search_indices_cancellable(&search_query, &cancelled) })
+                .spawn(async move {
+                    let started = Instant::now();
+                    let result = (|| -> opalglass::search::Result<Vec<SearchRow>> {
+                        let ticket = Ticket::from_cancelled(cancelled);
+                        ticket.check()?;
+                        if let Some(engine) = engine {
+                            let result = engine.search(&search_query, &ticket)?;
+                            Ok(result
+                                .hits
+                                .into_iter()
+                                .filter(|hit| vault.contains_path(std::path::Path::new(&hit.path)))
+                                .map(|hit| SearchRow {
+                                    path: PathBuf::from(&hit.path),
+                                    title: hit.title.clone(),
+                                    hit: Some(Arc::new(hit)),
+                                    snippet: None,
+                                })
+                                .collect())
+                        } else {
+                            let needle = search_query.trim().to_lowercase();
+                            let mut rows = vault
+                                .notes
+                                .iter()
+                                .filter(|n| {
+                                    n.path.to_string_lossy().to_lowercase().contains(&needle)
+                                })
+                                .map(|n| SearchRow {
+                                    path: n.path.clone(),
+                                    title: n.title.clone(),
+                                    hit: None,
+                                    snippet: None,
+                                })
+                                .collect::<Vec<_>>();
+                            rows.sort_by_key(|r| r.title.to_lowercase() != needle);
+                            rows.truncate(20);
+                            Ok(rows)
+                        }
+                    })();
+                    (result, started.elapsed())
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.revision != revision || this.search.read(cx).buffer.text() != query {
+                if task_cancelled.load(Ordering::Relaxed)
+                    || this.revision != revision
+                    || this.search.read(cx).buffer.text() != query
+                {
                     return;
                 }
-                this.search_results = results;
                 this.searching = false;
+                match results {
+                    Ok(results) => {
+                        this.search_results = results;
+                        this.search_selected = 0;
+                    }
+                    Err(error) => {
+                        this.search_results.clear();
+                        this.message(format!("Search: {error}"), true, cx);
+                    }
+                }
+                this.log_performance_phases(
+                    "Search",
+                    query.clone(),
+                    started,
+                    vec![("Search backend", backend)],
+                    cx,
+                );
                 if this.open_search_result
-                    && (!this.search_results.is_empty()
-                        || this.vault.as_ref().is_none_or(Vault::content_indexed))
+                    && (!this.search_results.is_empty() || this.search_ready())
                 {
                     this.open_search_result = false;
                     if this.search.read(cx).focus.is_focused(window) {
@@ -788,15 +933,107 @@ impl Workspace {
             });
         }));
     }
+    fn queue_search_snippets(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        if self.searching || !self.search_ready() {
+            return;
+        }
+        let Some(engine) = self.search_engine.clone() else {
+            return;
+        };
+        for i in range {
+            if self
+                .search_results
+                .get(i)
+                .is_some_and(|r| r.snippet.is_none() && r.hit.is_some())
+                && !self.snippet_requests.contains(&i)
+            {
+                self.snippet_requests.push(i);
+            }
+        }
+        if self.snippets_loading || self.snippet_requests.is_empty() {
+            return;
+        }
+        self.snippets_loading = true;
+        let revision = self.revision;
+        let query = self.search_query.clone();
+        let cancelled = self.search_cancelled.clone();
+        let task_cancelled = cancelled.clone();
+        let cache = self.snippet_cache.clone();
+        self._snippet_task = Some(cx.spawn(async move |this, cx| {
+            // UniformList first measures one row, then reports the visible range.
+            // Drain after that synchronous render, so both requests form one batch.
+            let hits = this
+                .update(cx, |this, _| {
+                    if task_cancelled.load(Ordering::Relaxed)
+                        || this.revision != revision
+                        || this.search_query != query
+                    {
+                        return Vec::new();
+                    }
+                    std::mem::take(&mut this.snippet_requests)
+                        .into_iter()
+                        .filter_map(|i| {
+                            let row = this.search_results.get(i)?;
+                            if row.snippet.is_some() {
+                                return None;
+                            }
+                            Some((i, row.hit.clone()?))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            let started = Instant::now();
+            let snippets = cx
+                .background_executor()
+                .spawn(async move {
+                    let ticket = Ticket::from_cancelled(cancelled);
+                    let mut cache = cache.lock().map_err(|_| "Snippet cache failed")?;
+                    hits.into_iter()
+                        .map(|(i, hit)| {
+                            ticket.check()?;
+                            let snippet = cache
+                                .get(&engine, &hit, &ticket)
+                                .unwrap_or_else(|_| Snippet::empty("unavailable"));
+                            ticket.check()?;
+                            Ok((i, snippet))
+                        })
+                        .collect::<opalglass::search::Result<Vec<_>>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if task_cancelled.load(Ordering::Relaxed)
+                    || this.revision != revision
+                    || this.search_query != query
+                {
+                    return;
+                }
+                this.snippets_loading = false;
+                match snippets {
+                    Ok(snippets) => {
+                        for (i, snippet) in snippets {
+                            if let Some(row) = this.search_results.get_mut(i) {
+                                row.snippet = Some(snippet);
+                            }
+                        }
+                        this.log_performance("Search snippets", query, started, cx);
+                    }
+                    Err(error) => {
+                        // Stop retrying a failed visible batch on every frame.
+                        this.search_error = Some(error.to_string());
+                        this.message(format!("Could not read search excerpts: {error}"), true, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
     fn open_first_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.search_results.first().and_then(|&index| {
-            self.vault
-                .as_ref()?
-                .notes
-                .get(index)
-                .map(|n| n.path.clone())
-        });
-        if let Some(path) = path {
+        if let Some(path) = self
+            .search_results
+            .get(self.search_selected)
+            .map(|r| r.path.clone())
+        {
             self.open_note(path, window, cx);
         }
     }
@@ -1123,7 +1360,21 @@ impl Workspace {
                     .border_1()
                     .border_color(rgb(LINE))
                     .bg(rgb(BG))
-                    .child(self.search.clone()),
+                    .when(self.vault.is_some(), |field| {
+                        field.child(self.search.clone())
+                    })
+                    .when(self.vault.is_none(), |field| {
+                        field.opacity(0.5).child(
+                            div()
+                                .size_full()
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .text_sm()
+                                .text_color(rgb(MUTED))
+                                .child("Open a vault to search"),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -1135,15 +1386,34 @@ impl Workspace {
                     .items_center()
                     .child(caption(if self.searching {
                         "SEARCHING…".into()
-                    } else if !self.search_query.is_empty()
-                        && self.vault.as_ref().is_some_and(|v| !v.content_indexed())
-                    {
-                        "RESULTS · indexing contents…".into()
+                    } else if !self.search_query.is_empty() && !self.search_ready() {
+                        if self.search_error.is_some() {
+                            "RESULTS · search unavailable".into()
+                        } else {
+                            "RESULTS · indexing…".into()
+                        }
                     } else {
-                        format!("NOTES · {}", self.search_results.len())
+                        if self.search_query.trim().is_empty() {
+                            format!(
+                                "NOTES · {}",
+                                self.vault.as_ref().map_or(0, |v| v.notes.len())
+                            )
+                        } else {
+                            format!(
+                                "RESULTS · {}{}",
+                                self.search_results.len(),
+                                if self.search_results.len()
+                                    == opalglass::search::query::RESULT_LIMIT
+                                {
+                                    "+"
+                                } else {
+                                    ""
+                                }
+                            )
+                        }
                     })),
             );
-        let searching = !self.search_query.is_empty();
+        let searching = !self.search_query.trim().is_empty();
         let inline_index = (!searching).then(|| self.inline_insert_index()).flatten();
         let notes = uniform_list(
             if searching { "search-results" } else { "notes" },
@@ -1153,6 +1423,9 @@ impl Workspace {
                 self.tree.visible.len() + usize::from(inline_index.is_some())
             },
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                if searching {
+                    this.queue_search_snippets(range.clone(), cx);
+                }
                 range
                     .filter_map(|index| {
                         if inline_index == Some(index) {
@@ -1161,12 +1434,8 @@ impl Workspace {
                         let row_index =
                             index - usize::from(inline_index.is_some_and(|i| index > i));
                         let (path, title, folder, depth) = if searching {
-                            let note = this
-                                .vault
-                                .as_ref()?
-                                .notes
-                                .get(*this.search_results.get(index)?)?;
-                            (note.path.clone(), note.title.clone(), false, 0)
+                            let row = this.search_results.get(index)?;
+                            (row.path.clone(), row.title.clone(), false, 0)
                         } else {
                             let entry = this.tree.visible.get(row_index)?;
                             (entry.path.clone(), entry.name(), entry.folder, entry.depth)
@@ -1196,7 +1465,7 @@ impl Workspace {
                                     let path = path.clone();
                                     move || format!("entry:{}", path.display())
                                 })
-                                .h(px(if searching { 56. } else { 32. }))
+                                .h(px(if searching { 98. } else { 32. }))
                                 .pl(px(8. + depth as f32 * 16.))
                                 .pr_2()
                                 .py_1()
@@ -1219,7 +1488,43 @@ impl Workspace {
                                         .child(format!("{icon}  {title}")),
                                 )
                                 .when(searching, |el| {
+                                    let row = &this.search_results[index];
+                                    let excerpt = row.snippet.as_ref().map(|snippet| {
+                                        let highlights =
+                                            snippet.highlights.iter().cloned().map(|range| {
+                                                (
+                                                    range,
+                                                    HighlightStyle {
+                                                        color: Some(rgb(ACCENT).into()),
+                                                        font_weight: Some(FontWeight::BOLD),
+                                                        ..Default::default()
+                                                    },
+                                                )
+                                            });
+                                        let fragment = match snippet.status {
+                                            "stale" | "missing" => {
+                                                "Note changed; waiting for refresh…".to_owned()
+                                            }
+                                            "unavailable" | "window_miss" | "positions_limit" => {
+                                                "Excerpt unavailable".to_owned()
+                                            }
+                                            _ => snippet.fragment.replace(['\n', '\r', '\t'], " "),
+                                        };
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(MUTED))
+                                            .h(px(36.))
+                                            .overflow_hidden()
+                                            .child(
+                                                StyledText::new(SharedString::from(fragment))
+                                                    .with_highlights(highlights),
+                                            )
+                                    });
                                     el.child(caption(path.display().to_string()).truncate())
+                                        .children(excerpt)
+                                        .when(index == this.search_selected, |el| {
+                                            el.bg(rgb(0x303047))
+                                        })
                                 })
                                 .tooltip(move |_, cx| {
                                     cx.new(|_| PathTooltip(tooltip.clone())).into()
@@ -1252,7 +1557,7 @@ impl Workspace {
                                     )
                                 })
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    if this.managing {
+                                    if this.managing || searching && this.searching {
                                         return;
                                     }
                                     this.dismiss(window, cx);
@@ -2544,7 +2849,7 @@ impl Workspace {
                     self.activate_tab(index, window, cx);
                 }
                 "o" => self.pick_vault(window, cx),
-                "p" | "f" => {
+                "p" | "f" if self.vault.is_some() => {
                     self.navigation.hidden = false;
                     self.search.update(cx, |editor, cx| {
                         editor.buffer.select(0, editor.buffer.text().len());
@@ -2570,12 +2875,23 @@ impl Workspace {
             }
         } else if key == "escape" {
             self.dismiss(window, cx);
+        } else if matches!(key, "up" | "down")
+            && self.search.read(cx).focus.is_focused(window)
+            && !self.search_results.is_empty()
+        {
+            if key == "down" {
+                self.search_selected =
+                    (self.search_selected + 1).min(self.search_results.len() - 1);
+            } else {
+                self.search_selected = self.search_selected.saturating_sub(1);
+            }
+            self.results_scroll
+                .scroll_to_item(self.search_selected, ScrollStrategy::Center);
+            cx.stop_propagation();
+            cx.notify();
         } else if key == "enter" && self.search.read(cx).focus.is_focused(window) {
             self.update_search(window, cx);
-            if self.searching
-                || (self.search_results.is_empty()
-                    && self.vault.as_ref().is_some_and(|v| !v.content_indexed()))
-            {
+            if self.searching || (self.search_results.is_empty() && !self.search_ready()) {
                 self.open_search_result = true;
             } else {
                 self.open_first_search_result(window, cx);
@@ -3056,8 +3372,10 @@ impl Render for Workspace {
                                     {
                                         tab.initial_frame_pending = false;
                                         this.update_document(cx);
-                                        if this.vault.as_ref().is_some_and(|v| !v.content_indexed())
-                                        {
+                                        // The file watcher may have populated contents
+                                        // while this window was waiting to be painted.
+                                        // Search still needs its own index in that case.
+                                        if this.index_revision != this.revision {
                                             cx.notify();
                                         }
                                     }

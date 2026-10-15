@@ -1,0 +1,12 @@
+[package]
+name = "opalglass-search"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tantivy = { version = "=0.26.2", default-features = false, features = ["mmap", "lz4-compression"] }
+serde_json = "=1.0.145"
+levenshtein_automata = "=0.2.1"
+tantivy-fst = "=0.5.0"
+tempfile = "=3.23.0"

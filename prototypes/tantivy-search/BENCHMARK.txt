@@ -1,0 +1,65 @@
+Tantivy search prototype v2 — October 15, 2026
+
+4,425 notes; 370,107,508 bytes (353 MiB) of original Markdown. Vault read only.
+Prototype changes only. Main application search has not been changed.
+
+Exact same-hit snippet comparison (five results; one warm-filesystem sample):
+Query                         Whole-file ms    Bounded ms    Speedup    Old bytes     New bytes
+Glossary                            37.261         0.234     159.2x    3,359,897        48,325
+Saducismus Triumphatus               9.267         0.178      52.2x      933,063        22,369
+Hydriotaphia                         6.353         0.199      32.0x      618,551        66,308
+compassion                           5.460         0.195      28.0x      140,200        72,769
+divine light                         4.250         0.214      19.9x      450,135        70,101
+
+Search and top-five snippet timings (milliseconds; twenty warm calls):
+Query                              Search median / p95   Uncached snippets   Cached snippets
+Glossary                             0.217 / 0.283            0.185             0.037
+Saducismus Triumphatus               0.688 / 0.755            0.151             0.035
+Hydriotaphia                         0.156 / 0.209            0.167             0.033
+glossry                              0.268 / 0.281            0.165             0.035
+compassion                           0.093 / 0.101            0.185             0.033
+divine light                         0.226 / 0.243            0.217             0.035
+opalglass-profile-missing-term       6.606 / 7.088            0.000             0.000
+glosssary                            0.290 / 0.306            0.174             0.037
+glosasry                             0.260 / 0.287            0.153             0.033
+compasion                            0.172 / 0.191            0.213             0.038
+divnie light                         0.392 / 0.408            0.231             0.038
+saducisums triumphatus               0.757 / 1.042            0.140             0.031
+"divnie light"                       0.004 / 0.005            0.000             0.000
+gloss*                               0.671 / 0.737            0.236             0.033
+xy                                   0.017 / 0.018            0.025             0.006
+hydriataphya                         6.318 / 7.064            0.162             0.033
+
+Index build: 11.73 seconds, including checkpoint generation and merges.
+Index: 133.45 MiB; previous index 129.37 MiB; increase 4.09 MiB (3.16%).
+Checkpoint maps before compression: 5.69 MiB. No body fields stored; all 4,425 stored documents checked.
+Indexing/verification peak RSS: 235.9 MiB (temporary build process).
+Index open: 0.333 ms, 6.0 MiB RSS.
+Search + bounded snippets peak RSS: 26.9 MiB before the legacy full-file baseline.
+Peak after also running whole-file baseline: 29.7 MiB.
+
+Relevance and correctness:
+- Glossary and Saducismus exact titles rank first. glossry, glosssary and glosasry find Glossary first.
+- saducisums triumphatus finds Saducismus Triumphatus first; hydriataphya finds Hydriotaphia, or Urn-Burial first.
+- compasion and divnie light return relevant corrected titles. Quoted "divnie light" stays exact and returns no matches.
+- The invented opalglass-profile-missing-term returns no results after tightening fallback rules.
+- xy has one real exact-token match in this vault (The Scholemaster); short words do not trigger fuzzy alternatives.
+- Every visible snippet in this benchmark verified its match and produced highlights; no stale, missing, window_miss or positions_limit results.
+- The CLI emits result metadata before five snippets. A smoke check verified corrected-word byte ranges against the emitted UTF-8 excerpts.
+
+Validation:
+- Five release tests passed: searchable unstored bodies; exact/fuzzy ranking; transpositions and two-edit title correction; exact quoted phrases; ordinary AND semantics; prefix limits; Unicode highlights; late matches in a 1.6 MB file; common-word position lists; skipped long tokens; cached reads; changed/deleted files; cancellation; outside-vault symlinks.
+- cargo clippy --all-targets -- -D warnings, cargo fmt --check and git diff --check passed.
+
+Method and limits:
+- Rust 1.90, Tantivy 0.26.2, portable release CPU target. One new index build. An initial query run exposed a relevance/latency problem; the final query run reused that same index after fixing it. Initial metrics are retained as bench-v2-initial.json.
+- Title-derived corrections are reused for body retrieval. Known words in multiword queries remain exact. Broad body expansion is limited to one edit; two-edit corrections require a title match. Expansion caps can reduce recall and are reported.
+- Search timings exclude snippets and UI. Snippet timings include source metadata checks, bounded reads, passage selection and JSON construction. Cached measurements still check metadata.
+- Queries run once then twenty times for warm median and nearest-rank p95. Uncached snippet samples clear the snippet cache, not the OS filesystem cache. First-call measurements are recorded in JSON; this is not a cold-disk test.
+- The side-by-side snippet test uses identical phrase-query hits for both paths, with one sample each. Different passage selection and excerpt lengths (~200 old / ~240 new) mean excerpt content need not be identical.
+- Unquoted v2 queries use token AND, not the v1 phrase default or the app arbitrary-substring scan. For example unquoted divine light now returns 1,115 exact-token AND hits; quoted phrase comparison uses the original 105 matches.
+- The 16 KiB source-read cap does not bound term-position decoding; a very frequent term still requires decoding its position list. Passage candidate sampling and rare pathological limits are documented in README.txt.
+- Memory is the standalone process and pages touched by these queries, not eventual GUI RAM. Fuzzy queries visit more index pages than v1 exact-only tests. Build timings vary with system/cache state; this is not evidence that adding checkpoints inherently speeds indexing.
+- No watcher, incremental updates, dirty-buffer overlay or app integration. Changed files yield stale snippets until rebuild; same-size edits preserving mtime are not detected.
+
+Files: prototypes/tantivy-search/README.txt (usage and design); source in src/search.rs, src/snippets.rs, src/trial.rs; raw measurements in target/search-audit/tantivy/build-v2.json, bench-v2.json and corresponding *-process.json files.
