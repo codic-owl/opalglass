@@ -1,7 +1,7 @@
-use crate::theme::{MISSING_LINK, MONO_FONT, missing_link_underline};
+use crate::theme::{MISSING_LINK, MONO_FONT, UI_FONT, missing_link_underline};
 use gpui::{prelude::*, *};
-use opalglass::buffer::Buffer;
-use std::ops::Range;
+use opalglass::{buffer::Buffer, live};
+use std::{ops::Range, sync::Arc};
 
 const LINE: f32 = 25.;
 const PAD: f32 = 20.;
@@ -18,6 +18,8 @@ struct SourceRow {
     range: Range<usize>,
     origin: Point<Pixels>,
     line: WrappedLine,
+    projection: Arc<live::Line>,
+    line_height: Pixels,
 }
 #[derive(Clone)]
 struct CachedRow {
@@ -26,6 +28,9 @@ struct CachedRow {
     selection: Range<usize>,
     marked: Option<Range<usize>>,
     line: WrappedLine,
+    projection: Arc<live::Line>,
+    line_height: Pixels,
+    revealed: bool,
 }
 
 pub struct ScrollAnchor;
@@ -42,6 +47,10 @@ pub struct Editor {
     pub buffer: Buffer,
     pub focus: FocusHandle,
     single_line: bool,
+    pub live_preview: bool,
+    live_revealed: Option<Range<usize>>,
+    live_lines: Vec<(Range<usize>, bool, Arc<live::Line>)>,
+    code_blocks: Vec<Range<usize>>,
     placeholder: String,
     bounds: Bounds<Pixels>,
     rows: Vec<Row>,
@@ -91,6 +100,10 @@ impl Editor {
             buffer,
             focus: cx.focus_handle(),
             single_line,
+            live_preview: false,
+            live_revealed: None,
+            live_lines: Vec::new(),
+            code_blocks: Vec::new(),
             placeholder: placeholder.into(),
             bounds: Bounds::default(),
             rows: Vec::new(),
@@ -126,6 +139,8 @@ impl Editor {
         self.source_requested_revision = u64::MAX;
         self._source_prepare = None;
         self.cached_rows.clear();
+        self.live_lines.clear();
+        self.code_blocks.clear();
         self.source_links.clear();
         self.missing_links.clear();
         self.source_list.reset(0);
@@ -134,6 +149,27 @@ impl Editor {
         self.scroll_x = px(0.);
         self.reveal = true;
         cx.notify();
+    }
+    pub fn set_live_preview(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.single_line || self.live_preview == enabled {
+            return;
+        }
+        self.live_preview = enabled;
+        self.live_revealed = None;
+        self.live_lines.clear();
+        self.cached_rows.clear();
+        let offset = self.source_list.logical_scroll_top();
+        self.source_list
+            .splice(0..self.source_list.item_count(), self.source_ranges.len());
+        self.source_list.scroll_to(offset);
+        cx.notify();
+    }
+    pub fn set_code_blocks(&mut self, ranges: Vec<Range<usize>>) {
+        if self.code_blocks != ranges {
+            self.code_blocks = ranges;
+            self.live_lines.clear();
+            self.cached_rows.clear();
+        }
     }
     pub fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
         self.source_list.scroll_by(delta);
@@ -148,8 +184,9 @@ impl Editor {
         let height = self
             .cached_rows
             .iter()
+            .rev()
             .find(|row| row.range == *range)
-            .map_or(px(LINE), |row| row.line.size(px(LINE)).height);
+            .map_or(px(LINE), |row| row.line.size(row.line_height).height);
         let fraction = (f32::from(offset.offset_in_item) / f32::from(height).max(1.)).clamp(0., 1.);
         let anchor = (
             self.buffer.revision(),
@@ -266,7 +303,10 @@ impl Editor {
                 return row.origin
                     + row
                         .line
-                        .position_for_index(byte - row.range.start, px(LINE))
+                        .position_for_index(
+                            row.projection.display_index(byte - row.range.start),
+                            row.line_height,
+                        )
                         .unwrap_or_default();
             }
             return self.bounds.origin;
@@ -288,19 +328,18 @@ impl Editor {
             if let Some(row) = self
                 .visible_rows
                 .iter()
-                .find(|r| position.y < r.origin.y + r.line.size(px(LINE)).height)
+                .find(|r| position.y < r.origin.y + r.line.size(r.line_height).height)
                 .or_else(|| self.visible_rows.last())
             {
                 let local = point(
                     position.x - row.origin.x,
                     (position.y - row.origin.y).max(px(0.)),
                 );
-                return row.range.start
-                    + row
-                        .line
-                        .closest_index_for_position(local, px(LINE))
-                        .unwrap_or_else(|i| i)
-                        .min(row.range.len());
+                let display = row
+                    .line
+                    .closest_index_for_position(local, row.line_height)
+                    .unwrap_or_else(|i| i);
+                return row.range.start + row.projection.source_index(display).min(row.range.len());
             }
             return self.buffer.cursor();
         }
@@ -326,7 +365,17 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_vertical(px(if down { LINE } else { -LINE }), extend, window, cx);
+        let height = if self.live_preview {
+            self.prepare_source();
+            let index = self
+                .source_ranges
+                .partition_point(|r| r.start <= self.buffer.cursor())
+                .saturating_sub(1);
+            self.shaped_source_row(index, window, cx).line_height
+        } else {
+            px(LINE)
+        };
+        self.move_vertical(if down { height } else { -height }, extend, window, cx);
     }
     fn move_vertical(
         &mut self,
@@ -343,16 +392,29 @@ impl Editor {
             .saturating_sub(1);
         let mut line = self.shaped_source_row(index, window, cx);
         let pos = line
-            .position_for_index(cursor - self.source_ranges[index].start, px(LINE))
+            .line
+            .position_for_index(
+                line.projection
+                    .display_index(cursor - self.source_ranges[index].start),
+                line.line_height,
+            )
             .unwrap_or_default();
         let x = *self.preferred_x.get_or_insert(pos.x);
-        let mut y = pos.y + px(LINE / 2.) + distance;
+        let mut y = pos.y + line.line_height / 2. + distance;
         loop {
-            let height = line.size(px(LINE)).height.max(px(LINE));
+            let height = line
+                .line
+                .size(line.line_height)
+                .height
+                .max(line.line_height);
             if y < px(0.) && index > 0 {
                 index -= 1;
                 line = self.shaped_source_row(index, window, cx);
-                y += line.size(px(LINE)).height.max(px(LINE));
+                y += line
+                    .line
+                    .size(line.line_height)
+                    .height
+                    .max(line.line_height);
             } else if y >= height && index + 1 < self.source_ranges.len() {
                 y -= height;
                 index += 1;
@@ -362,13 +424,16 @@ impl Editor {
                 let offset = if y < px(0.) {
                     0
                 } else if y >= height {
-                    range.len()
+                    line.projection.text.len()
                 } else {
-                    line.closest_index_for_position(point(x, y), px(LINE))
+                    line.line
+                        .closest_index_for_position(point(x, y), line.line_height)
                         .unwrap_or_else(|i| i)
                 };
-                self.buffer
-                    .move_to(range.start + offset.min(range.len()), extend);
+                self.buffer.move_to(
+                    range.start + line.projection.source_index(offset).min(range.len()),
+                    extend,
+                );
                 break;
             }
         }
@@ -378,14 +443,13 @@ impl Editor {
         index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> WrappedLine {
+    ) -> CachedRow {
         let _ = self.source_row(index, window, cx);
         self.cached_rows
             .iter()
             .rev()
             .find(|r| r.range == self.source_ranges[index])
             .unwrap()
-            .line
             .clone()
     }
     pub fn set_source_links(&mut self, links: Vec<Range<usize>>, missing: Vec<Range<usize>>) {
@@ -417,6 +481,24 @@ impl Editor {
             self.source_list.scroll_to(offset);
             self.source_version = self.buffer.revision();
             self.cached_rows.clear();
+            self.live_lines.clear();
+        }
+        if self.live_preview {
+            let selection = self.buffer.selection();
+            let revealed =
+                self.buffer.line_start(selection.start)..self.buffer.line_end(selection.end) + 1;
+            if self.live_revealed.as_ref() != Some(&revealed) {
+                let offset = self.source_list.logical_scroll_top();
+                for range in self.live_revealed.iter().chain(std::iter::once(&revealed)) {
+                    let start = self.source_ranges.partition_point(|r| r.end < range.start);
+                    let end = self.source_ranges.partition_point(|r| r.start < range.end);
+                    if end > start {
+                        self.source_list.splice(start..end, end - start);
+                    }
+                }
+                self.source_list.scroll_to(offset);
+                self.live_revealed = Some(revealed);
+            }
         }
         // Explicit navigation outside the opening viewport must work even if
         // the background index has not arrived yet (Ctrl+End, heading jumps).
@@ -435,7 +517,7 @@ impl Editor {
             let visible = self.visible_rows.iter().any(|r| {
                 r.range.start == self.source_ranges[index].start
                     && r.origin.y >= self.bounds.top()
-                    && r.origin.y + px(LINE) <= self.bounds.bottom()
+                    && r.origin.y + r.line_height <= self.bounds.bottom()
             });
             if visible {
                 self.source_list.scroll_to_reveal_item(index);
@@ -476,6 +558,49 @@ impl Editor {
             });
         }));
     }
+    fn projection(&mut self, range: &Range<usize>, revealed: bool) -> Arc<live::Line> {
+        if !self.live_preview {
+            return Arc::new(live::Line::raw(&self.buffer.text()[range.clone()]));
+        }
+        let start = self.buffer.line_start(range.start);
+        let end = self.buffer.line_end(range.start);
+        // Bound even a pathological single-line note. Normal lines are parsed as
+        // a unit so inline markup can cross the 256-byte virtual row boundaries.
+        let physical = if end - start <= 8192 {
+            start..end
+        } else {
+            range.clone()
+        };
+        let cached = self
+            .live_lines
+            .iter()
+            .find(|(r, active, _)| *r == physical && *active == revealed)
+            .map(|(_, _, line)| line.clone());
+        let line = cached.unwrap_or_else(|| {
+            let i = self.code_blocks.partition_point(|r| r.end <= range.start);
+            let code = self
+                .code_blocks
+                .get(i)
+                .is_some_and(|r| r.contains(&range.start));
+            let line = Arc::new(live::Line::new(
+                &self.buffer.text()[physical.clone()],
+                revealed,
+                code,
+                physical.start != start,
+            ));
+            if self.live_lines.len() >= 128 {
+                self.live_lines.drain(..64);
+            }
+            self.live_lines
+                .push((physical.clone(), revealed, line.clone()));
+            line
+        });
+        if physical == *range {
+            line
+        } else {
+            Arc::new(line.slice(range.start - physical.start..range.end - physical.start))
+        }
+    }
     fn source_row(
         &mut self,
         index: usize,
@@ -490,15 +615,40 @@ impl Editor {
             self.buffer.marked.as_ref().map(|r| {
                 r.start.clamp(range.start, range.end)..r.end.clamp(range.start, range.end)
             });
+        let revealed = !self.live_preview
+            || self
+                .live_revealed
+                .as_ref()
+                .is_some_and(|r| r.start <= range.start && range.start < r.end);
         let width = self.source_width;
-        let cached = self.cached_rows.iter().find(|r| {
-            r.range == range && r.width == width && r.selection == selection && r.marked == marked
-        });
-        let line = if let Some(cached) = cached {
-            cached.line.clone()
+        let cached = self
+            .cached_rows
+            .iter()
+            .find(|r| {
+                r.range == range
+                    && r.width == width
+                    && r.selection == selection
+                    && r.marked == marked
+                    && r.revealed == revealed
+            })
+            .cloned();
+        let shaped = if let Some(cached) = cached {
+            cached
         } else {
-            let text = &self.buffer.text()[range.clone()];
-            let mut cuts = vec![range.start, range.end, selection.start, selection.end];
+            let projection = self.projection(&range, revealed);
+            let to_display = |source: usize| {
+                projection.display_index(source.saturating_sub(range.start).min(range.len()))
+            };
+            let display_selection = to_display(selection.start)..to_display(selection.end);
+            let display_marked = marked
+                .as_ref()
+                .map(|r| to_display(r.start)..to_display(r.end));
+            let mut cuts = vec![
+                0,
+                projection.text.len(),
+                display_selection.start,
+                display_selection.end,
+            ];
             let first_link = self.source_links.partition_point(|r| r.end <= range.start);
             let links: Vec<_> = self.source_links[first_link..]
                 .iter()
@@ -510,69 +660,158 @@ impl Editor {
                 .take_while(|r| r.start < range.end)
                 .collect();
             for r in &links {
-                cuts.extend([r.start.max(range.start), r.end.min(range.end)]);
+                cuts.extend([to_display(r.start), to_display(r.end)]);
             }
-            if let Some(r) = &marked {
+            for span in &projection.spans {
+                cuts.extend([span.range.start, span.range.end]);
+            }
+            if let Some(r) = &display_marked {
                 cuts.extend([r.start, r.end]);
             }
             cuts.sort_unstable();
             cuts.dedup();
-            let line_start = self.buffer.line_start(range.start);
-            let prefix = self.buffer.text().as_bytes().get(line_start);
+            let heading = if let live::Kind::Heading(level) = projection.kind {
+                Some(level)
+            } else {
+                None
+            };
+            let code = matches!(projection.kind, live::Kind::Code | live::Kind::Fence);
+            let font_size = if let Some(level) = heading {
+                match level {
+                    1 => 32.,
+                    2 => 25.,
+                    3 => 21.,
+                    _ => 18.,
+                }
+            } else if self.live_preview && !code {
+                16.
+            } else {
+                14.
+            };
+            let line_height = px(if self.live_preview {
+                (font_size * 1.5_f32).max(LINE)
+            } else {
+                LINE
+            });
+            let prefix = self
+                .buffer
+                .text()
+                .as_bytes()
+                .get(self.buffer.line_start(range.start));
             let runs: Vec<_> = cuts
                 .windows(2)
-                .map(|pair| TextRun {
-                    len: pair[1] - pair[0],
-                    font: font(MONO_FONT),
-                    color: rgb(if missing.iter().any(|r| r.contains(&pair[0])) {
-                        MISSING_LINK
-                    } else if prefix == Some(&b'#') || links.iter().any(|r| r.contains(&pair[0])) {
-                        0xb8a5fa
-                    } else if prefix == Some(&b'>') {
-                        0x9bbfb3
+                .filter(|p| p[0] < p[1])
+                .map(|pair| {
+                    let source = range.start + projection.source_index(pair[0]);
+                    let style = projection
+                        .spans
+                        .iter()
+                        .find(|s| s.range.contains(&pair[0]))
+                        .map(|s| &s.style);
+                    let is_missing = missing.iter().any(|r| r.contains(&source));
+                    let is_link = links.iter().any(|r| r.contains(&source))
+                        || style.is_some_and(|s| s.target.is_some());
+                    let inline_code = style.is_some_and(|s| s.code);
+                    let mut text_font = font(if self.live_preview && !code && !inline_code {
+                        UI_FONT
                     } else {
-                        0xd6d9e3
-                    })
-                    .into(),
-                    background_color: (pair[0] >= selection.start && pair[1] <= selection.end)
-                        .then(|| rgb(0x38496a).into()),
-                    underline: marked
-                        .as_ref()
-                        .filter(|r| r.start <= pair[0] && pair[1] <= r.end)
-                        .map(|_| UnderlineStyle {
-                            thickness: px(1.),
-                            color: Some(rgb(0xb6a1ff).into()),
-                            wavy: false,
+                        MONO_FONT
+                    });
+                    if heading.is_some() || style.is_some_and(|s| s.bold) {
+                        text_font.weight = FontWeight::BOLD;
+                    }
+                    if style.is_some_and(|s| s.italic) {
+                        text_font.style = FontStyle::Italic;
+                    }
+                    TextRun {
+                        len: pair[1] - pair[0],
+                        font: text_font,
+                        color: rgb(if is_missing {
+                            MISSING_LINK
+                        } else if is_link || (!self.live_preview && prefix == Some(&b'#')) {
+                            0xb8a5fa
+                        } else if heading.is_some() {
+                            0xf0edf9
+                        } else if code || inline_code {
+                            0xc2d8ce
+                        } else if projection.kind == live::Kind::Quote
+                            || (!self.live_preview && prefix == Some(&b'>'))
+                        {
+                            0x9bbfb3
+                        } else {
+                            0xd6d9e3
                         })
-                        .or_else(|| {
-                            missing
-                                .iter()
-                                .any(|r| r.contains(&pair[0]))
-                                .then(missing_link_underline)
-                        }),
-                    strikethrough: None,
+                        .into(),
+                        background_color: if pair[0] >= display_selection.start
+                            && pair[1] <= display_selection.end
+                        {
+                            Some(rgb(0x38496a).into())
+                        } else {
+                            inline_code.then(|| rgb(0x252e37).into())
+                        },
+                        underline: if display_marked
+                            .as_ref()
+                            .is_some_and(|r| r.start <= pair[0] && pair[1] <= r.end)
+                        {
+                            Some(UnderlineStyle {
+                                thickness: px(1.),
+                                color: Some(rgb(0xb6a1ff).into()),
+                                wavy: false,
+                            })
+                        } else if is_missing {
+                            Some(missing_link_underline())
+                        } else {
+                            is_link.then_some(UnderlineStyle {
+                                thickness: px(1.),
+                                color: None,
+                                wavy: false,
+                            })
+                        },
+                        strikethrough: style.is_some_and(|s| s.strike).then_some(
+                            StrikethroughStyle {
+                                thickness: px(1.),
+                                color: None,
+                            },
+                        ),
+                    }
                 })
                 .collect();
             let line = window
                 .text_system()
-                .shape_text(text.to_owned().into(), px(14.), &runs, Some(width), None)
+                .shape_text(
+                    projection.text.clone().into(),
+                    px(font_size),
+                    &runs,
+                    Some(width),
+                    None,
+                )
                 .unwrap_or_default()
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            if self.cached_rows.len() >= 256 {
-                self.cached_rows.drain(..128);
-            }
-            self.cached_rows.push(CachedRow {
+            let shaped = CachedRow {
                 range: range.clone(),
                 width,
                 selection,
                 marked,
-                line: line.clone(),
-            });
-            line
+                line,
+                projection,
+                line_height,
+                revealed,
+            };
+            if self.cached_rows.len() >= 256 {
+                self.cached_rows.drain(..128);
+            }
+            self.cached_rows.push(shaped.clone());
+            shaped
         };
-        let height = line.size(px(LINE)).height.max(px(LINE));
+        let CachedRow {
+            line,
+            projection,
+            line_height,
+            ..
+        } = shaped;
+        let height = line.size(line_height).height.max(line_height);
         let entity = cx.entity();
         canvas(
             |_, _, _| (),
@@ -589,11 +828,34 @@ impl Editor {
                     let origin = bounds.origin + point(px(GUTTER), px(0.));
                     let active = editor.buffer.line_start(editor.buffer.cursor())
                         == editor.buffer.line_start(range.start);
-                    if active
+                    if matches!(projection.kind, live::Kind::Code | live::Kind::Fence) {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                origin - point(px(8.), px(0.)),
+                                size(bounds.size.width - px(GUTTER - 8.), bounds.size.height),
+                            ),
+                            rgb(0x10131a),
+                        ));
+                    } else if active
                         && editor.focus.is_focused(window)
                         && editor.buffer.selection().is_empty()
                     {
                         window.paint_quad(fill(bounds, rgb(0x1d2230)));
+                    }
+                    if projection.kind == live::Kind::Quote {
+                        window.paint_quad(fill(
+                            Bounds::new(origin - point(px(9.), px(0.)), size(px(2.), height)),
+                            rgb(0xb8a5fa),
+                        ));
+                    }
+                    if projection.kind == live::Kind::Rule && projection.text.is_empty() {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                origin + point(px(0.), height / 2.),
+                                size(editor.source_width, px(1.)),
+                            ),
+                            rgb(0x3b4254),
+                        ));
                     }
                     if editor.buffer.line_start(range.start) == range.start {
                         let number = editor.buffer.line_number(range.start).to_string();
@@ -612,16 +874,24 @@ impl Editor {
                         );
                         let number_origin =
                             bounds.origin + point(px(GUTTER - 16.) - number_line.width, px(0.));
-                        let _ = number_line.paint(number_origin, px(LINE), window, cx);
+                        let _ = number_line.paint(number_origin, line_height, window, cx);
                     }
                     editor.visible_rows.push(SourceRow {
                         range: range.clone(),
                         origin,
                         line: line.clone(),
+                        projection: projection.clone(),
+                        line_height,
                     });
-                    let _ =
-                        line.paint_background(origin, px(LINE), TextAlign::Left, None, window, cx);
-                    let _ = line.paint(origin, px(LINE), TextAlign::Left, None, window, cx);
+                    let _ = line.paint_background(
+                        origin,
+                        line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
                     if editor.buffer.text().is_empty() && !editor.placeholder.is_empty() {
                         let placeholder = window.text_system().shape_line(
                             editor.placeholder.clone().into(),
@@ -636,7 +906,7 @@ impl Editor {
                             }],
                             None,
                         );
-                        let _ = placeholder.paint(origin, px(LINE), window, cx);
+                        let _ = placeholder.paint(origin, line_height, window, cx);
                     }
                     let cursor = editor.buffer.cursor();
                     let cursor_row = editor
@@ -646,10 +916,16 @@ impl Editor {
                     if editor.focus.is_focused(window) && cursor_row == index {
                         let pos = origin
                             + line
-                                .position_for_index(cursor - range.start, px(LINE))
+                                .position_for_index(
+                                    projection.display_index(cursor - range.start),
+                                    line_height,
+                                )
                                 .unwrap_or_default();
                         window.paint_quad(fill(
-                            Bounds::new(pos + point(px(0.), px(3.)), size(px(2.), px(LINE - 5.))),
+                            Bounds::new(
+                                pos + point(px(0.), px(3.)),
+                                size(px(2.), line_height - px(5.)),
+                            ),
                             rgb(0xb7a5ff),
                         ));
                     }
@@ -1021,7 +1297,12 @@ impl EntityInputHandler for Editor {
         {
             return None;
         }
-        Some(Bounds::new(self.point_for(byte), size(px(2.), px(LINE))))
+        let height = self
+            .visible_rows
+            .iter()
+            .find(|r| r.range.start <= byte && byte <= r.range.end)
+            .map_or(px(LINE), |r| r.line_height);
+        Some(Bounds::new(self.point_for(byte), size(px(2.), height)))
     }
     fn character_index_for_point(
         &mut self,

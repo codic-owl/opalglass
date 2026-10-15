@@ -11,6 +11,86 @@ mod editor {
         use gpui::{EntityInputHandler, Modifiers, TestAppContext, point, px};
 
         #[gpui::test]
+        fn live_preview_clicks_edit_source_and_preserve_ime_and_history(cx: &mut TestAppContext) {
+            let text = "Lead\n# Heading\n\n**bold** and *italic* and `code`\n[[Target|éclair 👩‍💻]]\n- [x] task\n```rs\n**literal**\n```\n";
+            let alias = text.find("éclair").unwrap();
+            let code = text.find("```rs").unwrap()..text.len();
+            let (view, cx) = cx.add_window_view(|window, cx| {
+                let mut editor = Editor::new(text, false, "", cx);
+                editor.set_code_blocks(vec![code]);
+                editor.set_live_preview(true, cx);
+                editor.focus.focus(window);
+                editor
+            });
+            cx.simulate_resize(gpui::size(px(1100.), px(900.)));
+            cx.run_until_parked();
+            let position = view.read_with(cx, |editor, _| {
+                assert_eq!(editor.buffer.text(), text);
+                let heading = editor.visible_rows.iter().find(|r| r.range.start == text.find("# Heading").unwrap()).unwrap();
+                assert_eq!(heading.projection.text, "Heading");
+                assert!(heading.line_height > px(LINE));
+                let formatted = editor.visible_rows.iter().find(|r| r.range.start == text.find("**bold**").unwrap()).unwrap();
+                assert_eq!(formatted.projection.text, "bold and italic and code");
+                assert!(formatted.projection.spans.iter().any(|s| s.style.bold));
+                assert!(editor.visible_rows.iter().any(|r| r.projection.text == "**literal**"));
+                let link = editor.visible_rows.iter().find(|r| r.projection.text == "éclair 👩‍💻").unwrap();
+                link.origin + point(px(0.), link.line_height / 2.)
+            });
+            cx.simulate_click(position, Modifiers::default());
+            view.read_with(cx, |editor, _| {
+                assert_eq!(editor.buffer.cursor(), alias);
+                assert!(editor.visible_rows.iter().any(|r| r.projection.text == "[[Target|éclair 👩‍💻]]"));
+            });
+            cx.simulate_input("X");
+            view.read_with(cx, |editor, _| assert!(editor.buffer.text().contains("[[Target|Xéclair")));
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.text(), text));
+            view.update_in(cx, |editor, window, cx| {
+                let emoji = editor.buffer.text().find("👩‍💻").unwrap();
+                let range = editor.buffer.to_utf16(emoji..emoji + "👩‍💻".len());
+                editor.replace_and_mark_text_in_range(Some(range), "ni", Some(0..2), window, cx);
+                editor.replace_text_in_range(None, "你", window, cx);
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.text(), text));
+            cx.simulate_keystrokes("ctrl-a ctrl-c");
+            view.read_with(cx, |editor, cx| {
+                assert_eq!(editor.buffer.selected(), text);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), text);
+            });
+            view.update(cx, |editor, cx| editor.set_live_preview(false, cx));
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.text(), text));
+        }
+
+        #[gpui::test]
+        fn live_preview_keyboard_navigation_and_virtualization(cx: &mut TestAppContext) {
+            let text = format!("Top\n# Heading\n**bold** and [[Note|alias]]\n{}", "A **formatted** paragraph 👩‍💻\n\n".repeat(20_000));
+            let (view, cx) = cx.add_window_view(|window, cx| {
+                let mut editor = Editor::new(&text, false, "", cx);
+                editor.set_live_preview(true, cx);
+                editor.focus.focus(window);
+                editor
+            });
+            cx.simulate_keystrokes("down");
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.line_column().0, 2));
+            cx.simulate_keystrokes("up");
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.line_column().0, 1));
+            cx.simulate_keystrokes("down down");
+            view.read_with(cx, |editor, _| assert_eq!(editor.buffer.line_column().0, 3));
+            cx.simulate_keystrokes("ctrl-end shift-pageup");
+            view.read_with(cx, |editor, _| {
+                assert!(editor.buffer.line_column().0 > 39_000);
+                assert!(editor.first_paint_indexed_rows.unwrap() <= 128);
+                assert!(editor.cached_rows.len() <= 256);
+                assert!(editor.live_lines.len() <= 128);
+                assert!(editor.visible_rows.len() < 100);
+                let caret = editor.point_for(editor.buffer.cursor());
+                assert!(caret.y >= editor.bounds.top() && caret.y < editor.bounds.bottom());
+                assert_eq!(editor.buffer.text(), text);
+            });
+        }
+
+        #[gpui::test]
         fn word_shortcuts_and_page_selection(cx: &mut TestAppContext) {
             let text = format!(
                 "café e\u{301}lan\n{}",
@@ -1105,6 +1185,41 @@ mod workspace {
                 assert!(this.modal == super::Modal::None);
                 assert!(this.sort_menu.is_none());
                 assert!(!this.navigation.auto_reveal);
+            });
+        }
+
+        #[gpui::test]
+        fn live_preview_toggle_works_in_source_split_and_new_tabs(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let text = "# Heading\n\n**bold** with [[Missing|alias]]\n\n```\n**literal**\n```";
+            std::fs::write(folder.path().join("A.md"), text).unwrap();
+            std::fs::write(folder.path().join("B.md"), text).unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            click(cx, "source");
+            click(cx, "toggle-live-preview");
+            view.read_with(cx, |this, cx| {
+                assert!(this.live_preview);
+                let tab = &this.tabs[this.active];
+                assert!(tab.editor.read(cx).live_preview);
+                assert!(!tab.dirty(cx));
+            });
+            cx.simulate_keystrokes("ctrl-end");
+            cx.simulate_input("\nEdited");
+            cx.simulate_keystrokes("ctrl-s");
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), format!("{text}\nEdited"));
+            click(cx, "split");
+            click(cx, "lock-reading-scroll");
+            view.update_in(cx, |this, w, cx| this.open_note("B.md".into(), w, cx));
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert!(this.tabs[this.active].editor.read(cx).live_preview);
+                assert!(!this.tabs[this.active].editor.read(cx).missing_links.is_empty());
+            });
+            cx.simulate_keystrokes("ctrl-shift-e");
+            view.read_with(cx, |this, cx| {
+                assert!(!this.live_preview);
+                assert!(this.tabs.iter().all(|t| !t.editor.read(cx).live_preview));
+                assert!(this.mode == super::ViewMode::Split);
             });
         }
 

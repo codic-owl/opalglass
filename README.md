@@ -75,6 +75,12 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
   with hover labels, and a draggable divider in split view. The reading pane’s
   lock button links scrolling to the editor using Markdown source positions;
   unlock it to scroll the two panes independently.
+- Live Preview editing in Source and Split: use the pencil icon or Ctrl Shift E
+  to toggle formatted Markdown. Inactive lines render headings, emphasis, links,
+  quotes, lists, tasks, and code; the line being edited or selected shows its
+  original syntax. Clipboard, saves, undo, and IME composition use the original
+  Markdown. Rendering and source-to-display mappings are limited to viewport
+  rows, with bounded caches and bounded parsing for exceptionally long lines.
 - Source line numbers, active-line highlighting, word navigation/deletion, and
   page navigation with selection. Vertical movement remembers the text column.
 - A centered reading column with clearer heading, quote, and link styling;
@@ -280,6 +286,7 @@ It is saved during the periodic refresh and on normal close or vault switch.
 | Ctrl Tab / Ctrl Shift Tab | Next / previous tab |
 | Ctrl 1–8 / Ctrl 9 | Select numbered tab / last tab |
 | Ctrl E | Cycle source / split / reading |
+| Ctrl Shift E | Toggle raw Source / Live Preview editing |
 | Ctrl Q | Save all and quit |
 | Ctrl A / C / X / V | Select all / copy / cut / paste |
 | Ctrl Z / Ctrl Shift Z / Ctrl Y | Undo / redo |
@@ -393,7 +400,7 @@ partially analyzed note cancels its initial analysis until that tab is active ag
 Undo retains up to 200 edits within a 32 MiB changed-text budget, always retaining
 the latest edit even if it exceeds that budget. Durable save/conflict checks
 still complete synchronously before close or quit. There is
-no Obsidian plugin compatibility, graph view, live-preview editing, sync,
+no Obsidian plugin compatibility, graph view, sync,
 attachment management, deletion UI, or session persistence yet.
 
 Read-only performance measurements for a vault:

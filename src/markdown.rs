@@ -38,15 +38,42 @@ pub struct Span {
 /// Parse common inline formatting into display text and non-overlapping UTF-8
 /// ranges. Unsupported syntax remains literal. This is not a CommonMark parser.
 pub fn inline(source: &str) -> (String, Vec<Span>) {
+    let (text, spans, _) = inline_impl(source, false);
+    (text, spans)
+}
+
+/// Display bytes mapped back to source bytes for direct editing of rendered text.
+/// The extra final entry maps the caret after the last displayed character.
+pub fn inline_mapped(source: &str) -> (String, Vec<Span>, Vec<usize>) {
+    inline_impl(source, true)
+}
+
+fn inline_impl(source: &str, mapped: bool) -> (String, Vec<Span>, Vec<usize>) {
     fn parse(
         source: &str,
         inherited: InlineStyle,
         depth: usize,
         out: &mut String,
         spans: &mut Vec<Span>,
+        mapping: &mut Option<Vec<usize>>,
+        base: usize,
     ) {
-        fn append(text: &str, style: &InlineStyle, out: &mut String, spans: &mut Vec<Span>) {
+        fn append(
+            text: &str,
+            style: &InlineStyle,
+            out: &mut String,
+            spans: &mut Vec<Span>,
+            mapping: &mut Option<Vec<usize>>,
+            base: usize,
+        ) {
             let start = out.len();
+            if let Some(mapping) = mapping.as_mut()
+                && !text.is_empty()
+            {
+                mapping.truncate(start);
+                let offset = text.as_ptr() as usize - base;
+                mapping.extend(offset..=offset + text.len());
+            }
             out.push_str(text);
             if start != out.len() && *style != InlineStyle::default() {
                 if let Some(previous) = spans.last_mut()
@@ -63,7 +90,7 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
             }
         }
         if depth > 16 {
-            append(source, &inherited, out, spans);
+            append(source, &inherited, out, spans, mapping, base);
             return;
         }
         let mut rest = source;
@@ -76,7 +103,14 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
                 && let Some(c) = escaped.chars().next()
                 && c.is_ascii_punctuation()
             {
-                append(&escaped[..c.len_utf8()], &inherited, out, spans);
+                append(
+                    &escaped[..c.len_utf8()],
+                    &inherited,
+                    out,
+                    spans,
+                    mapping,
+                    base,
+                );
                 rest = &escaped[c.len_utf8()..];
                 continue;
             }
@@ -88,7 +122,7 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
                 let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
                 let mut style = inherited.clone();
                 style.target = Some(target.trim().into());
-                append(label.trim(), &style, out, spans);
+                append(label.trim(), &style, out, spans, mapping, base);
                 rest = &rest[end + 4..];
                 continue;
             }
@@ -102,7 +136,7 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
                 let target = &rest[middle + 2..middle + 2 + end];
                 let mut style = inherited.clone();
                 style.target = Some(target.into());
-                append(&rest[1..middle], &style, out, spans);
+                append(&rest[1..middle], &style, out, spans, mapping, base);
                 rest = &rest[middle + end + 3..];
                 continue;
             }
@@ -129,9 +163,9 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
                         _ => style.italic = true,
                     }
                     if style.code {
-                        append(&tail[..end], &style, out, spans);
+                        append(&tail[..end], &style, out, spans, mapping, base);
                     } else {
-                        parse(&tail[..end], style, depth + 1, out, spans);
+                        parse(&tail[..end], style, depth + 1, out, spans, mapping, base);
                     }
                     rest = &tail[end + delimiter.len()..];
                     matched = true;
@@ -144,15 +178,24 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
                     + rest[first..]
                         .find(['\\', '[', '`', '*', '_', '~'])
                         .unwrap_or(rest.len() - first);
-                append(&rest[..n], &inherited, out, spans);
+                append(&rest[..n], &inherited, out, spans, mapping, base);
                 rest = &rest[n..];
             }
         }
     }
     let mut text = String::new();
     let mut spans = Vec::new();
-    parse(source, InlineStyle::default(), 0, &mut text, &mut spans);
-    (text, spans)
+    let mut mapping = mapped.then(Vec::new);
+    parse(
+        source,
+        InlineStyle::default(),
+        0,
+        &mut text,
+        &mut spans,
+        &mut mapping,
+        source.as_ptr() as usize,
+    );
+    (text, spans, mapping.unwrap_or_default())
 }
 
 pub fn blocks(source: &str) -> Vec<Block> {

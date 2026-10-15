@@ -185,6 +185,7 @@ pub struct Workspace {
     resizing_sidebar: bool,
     split_ratio: f32,
     scroll_locked: bool,
+    live_preview: bool,
     split_bounds: Rc<Cell<Bounds<Pixels>>>,
     split_drag_offset: Option<f32>,
     typeahead: String,
@@ -554,6 +555,7 @@ impl Workspace {
             resizing_sidebar: false,
             split_ratio: 0.5,
             scroll_locked: false,
+            live_preview: false,
             split_bounds: Rc::new(Cell::new(Bounds::default())),
             split_drag_offset: None,
             typeahead: String::new(),
@@ -1389,8 +1391,12 @@ impl Workspace {
                     Ok((text, buffer, prepared)) => {
                         let normalized = buffer.snapshot();
                         let revision = buffer.revision();
-                        let editor =
-                            cx.new(|cx| Editor::from_buffer(buffer, false, "Start writing…", cx));
+                        let editor = cx.new(|cx| {
+                            let mut editor =
+                                Editor::from_buffer(buffer, false, "Start writing…", cx);
+                            editor.set_live_preview(this.live_preview, cx);
+                            editor
+                        });
                         let mut state = (revision, 0, 0);
                         let subscription = cx.observe(&editor, move |_, editor, cx| {
                             let buffer = &editor.read(cx).buffer;
@@ -1520,8 +1526,21 @@ impl Workspace {
             })
             .map(|link| link.range.clone())
             .collect();
+        let mut code_blocks: Vec<std::ops::Range<usize>> = Vec::new();
+        for row in &tab.prepared.rows {
+            if matches!(row.kind, Kind::Code) {
+                if let Some(last) = code_blocks.last_mut()
+                    && last.end == row.source.start
+                {
+                    last.end = row.source.end;
+                } else {
+                    code_blocks.push(row.source.clone());
+                }
+            }
+        }
         tab.link_style_revision = revision;
         tab.editor.update(cx, |editor, cx| {
+            editor.set_code_blocks(code_blocks);
             editor.set_source_links(links, missing);
             cx.notify();
         });
@@ -2244,6 +2263,28 @@ impl Workspace {
         } else {
             self.focus.focus(window);
         }
+    }
+    fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let started = Instant::now();
+        self.live_preview = !self.live_preview;
+        for tab in &self.tabs {
+            tab.editor.update(cx, |editor, cx| {
+                editor.set_live_preview(self.live_preview, cx)
+            });
+        }
+        self.focus_document(window, cx);
+        cx.notify();
+        self.log_performance(
+            "Change editor",
+            if self.live_preview {
+                "Live Preview"
+            } else {
+                "Raw Source"
+            }
+            .into(),
+            started,
+            cx,
+        );
     }
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         let started = Instant::now();
@@ -3315,6 +3356,7 @@ impl Workspace {
                     self.search.read(cx).focus.focus(window);
                 }
                 "w" => self.close_tab(window, cx),
+                "e" if shift => self.toggle_live_preview(window, cx),
                 "e" => {
                     let mode = match self.mode {
                         ViewMode::Source => ViewMode::Split,
@@ -3760,6 +3802,24 @@ impl Render for Workspace {
                         this.set_mode(mode, window, cx);
                     },
                 )));
+            }
+            if self.mode != ViewMode::Preview {
+                modes = modes.child(
+                    icon_button(
+                        "toggle-live-preview",
+                        ToolbarIcon::NewNote,
+                        if self.live_preview {
+                            "Live Preview · Switch to raw Source · Ctrl Shift E"
+                        } else {
+                            "Raw Source · Enable Live Preview · Ctrl Shift E"
+                        }
+                        .into(),
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_live_preview(window, cx)),
+                    ),
+                );
             }
             tools = tools.child(
                 modes
