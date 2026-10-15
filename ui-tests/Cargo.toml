@@ -10,29 +10,6 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "3314de81755d7ef94
 tempfile = "=3.23.0"
 
 [profile.dev]
-debug = 0
-
 # Match the app's normal development launch when measuring first paint.
-[profile.dev.package.opalglass-ui-tests]
 opt-level = 2
-
-[profile.dev.package.opalglass]
-opt-level = 2
-
-[profile.dev.package.gpui]
-opt-level = 2
-
-[profile.dev.package.cosmic-text]
-opt-level = 2
-
-[profile.dev.package.rustybuzz]
-opt-level = 2
-
-[profile.dev.package.ttf-parser]
-opt-level = 2
-
-[profile.dev.package.swash]
-opt-level = 2
-
-[profile.dev.package.taffy]
-opt-level = 2
+debug = 0

@@ -67,6 +67,8 @@ mod editor {
                 editor
             });
             view.read_with(cx, |editor, _| {
+                assert_eq!(editor.first_paint_indexed_rows, Some(128));
+                assert!(editor.source_complete);
                 assert!(editor.source_ranges.len() > 20_000);
                 assert!(editor.cached_rows.len() < 100);
             });
@@ -90,6 +92,41 @@ mod editor {
             cx.simulate_input("ş");
             cx.simulate_keystrokes("ctrl-z");
             view.read_with(cx, |editor, _| assert_eq!(editor.buffer.text(), text));
+        }
+
+        #[gpui::test]
+        fn opening_source_index_preserves_edits_and_immediate_end_navigation(
+            cx: &mut TestAppContext,
+        ) {
+            use gpui::AppContext;
+            let text = "line 😀\n".repeat(20_000);
+            let editor = cx.new(|cx| Editor::new(&text, false, "", cx));
+            editor.update(cx, |editor, cx| {
+                editor.prepare_source();
+                assert!(!editor.source_complete);
+                assert_eq!(editor.source_ranges.len(), 128);
+                editor.start_source_index(editor.buffer.revision(), cx);
+                // An edit races the pending snapshot; it must never install old ranges.
+                editor.buffer.replace(0..0, "inserted\n");
+            });
+            cx.run_until_parked();
+            editor.update(cx, |editor, cx| {
+                assert!(!editor.source_complete);
+                editor.prepare_source();
+                assert_eq!(
+                    editor.source_ranges,
+                    opalglass::document::source_rows(editor.buffer.text())
+                );
+                assert!(editor.buffer.text().starts_with("inserted\n"));
+                editor.set_text(&text, cx);
+                editor.prepare_source();
+                assert!(!editor.source_complete);
+                // Jump before the first frame/background task gets a chance to run.
+                editor.buffer.move_to(text.len(), false);
+                editor.prepare_source();
+                assert!(editor.source_complete);
+                assert_eq!(editor.source_ranges.last().unwrap().end, text.len());
+            });
         }
 
         #[gpui::test]
@@ -399,6 +436,12 @@ mod workspace {
             cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::default());
             cx.simulate_mouse_up(point, gpui::MouseButton::Right, gpui::Modifiers::default());
         }
+        fn right_click_explorer_space(cx: &mut gpui::VisualTestContext) {
+            let bounds = cx.debug_bounds("explorer").unwrap();
+            let point = gpui::point(bounds.left() + gpui::px(12.), bounds.bottom() - gpui::px(8.));
+            cx.simulate_mouse_down(point, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.simulate_mouse_up(point, gpui::MouseButton::Right, gpui::Modifiers::default());
+        }
         fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
             let point = cx.debug_bounds(selector).unwrap().center();
             cx.simulate_click(point, gpui::Modifiers::default());
@@ -453,7 +496,7 @@ mod workspace {
                 std::fs::read_to_string(folder.path().join("Welcome.md")).unwrap(),
                 "[[Ideas/Renamed]]"
             );
-            right_click(cx, "vault-location");
+            right_click_explorer_space(cx);
             click(cx, "explorer-action-0");
             cx.simulate_input("Root note");
             cx.simulate_keystrokes("enter");
@@ -508,7 +551,11 @@ mod workspace {
             drag(cx, "entry:Ideas", "entry:Ideas/Nested");
             assert!(folder.path().join("Ideas/Nested").is_dir());
             assert!(!folder.path().join("Ideas/Nested/Ideas").exists());
-            drag(cx, "entry:Archive/Note.md", "vault-location");
+            right_click(cx, "entry:Archive/Note.md");
+            click(cx, "explorer-action-1"); // Move to the root through the chooser.
+            cx.simulate_input("/");
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
             assert!(folder.path().join("Note.md").exists());
             assert_eq!(
                 std::fs::read_to_string(folder.path().join("Welcome.md")).unwrap(),
@@ -704,6 +751,38 @@ mod workspace {
         }
 
         #[gpui::test]
+        fn tab_click_reveals_note_and_preserves_document_focus(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(folder.path().join("Nested/Deep")).unwrap();
+            std::fs::write(folder.path().join("Welcome.md"), "welcome").unwrap();
+            std::fs::write(folder.path().join("Nested/Deep/Note.md"), "body").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            assert!(cx.debug_bounds("vault-location").is_none());
+            assert!(cx.debug_bounds("reveal-active").is_none());
+            view.update_in(cx, |this, w, cx| this.open_note("Nested/Deep/Note.md".into(), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-p");
+            cx.simulate_input("Welcome");
+            cx.simulate_keystrokes("ctrl-b");
+            click(cx, "tab-1"); // Re-click the active tab with search and the sidebar hidden.
+            view.read_with(cx, |this, cx| {
+                assert!(!this.navigation.hidden);
+                assert!(this.search.read(cx).buffer.text().is_empty());
+                assert_eq!(this.navigation.selected, Some("Nested/Deep/Note.md".into()));
+                assert!(this.navigation.expanded.contains(&PathBuf::from("Nested")));
+                assert!(this.navigation.expanded.contains(&PathBuf::from("Nested/Deep")));
+            });
+            assert!(cx.debug_bounds("entry:Nested/Deep/Note.md").is_some());
+            cx.simulate_input("typed ");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[1].editor.read(cx).buffer.text(), "typed body"));
+            click(cx, "tab-0");
+            view.read_with(cx, |this, _| {
+                assert_eq!(this.active, 0);
+                assert_eq!(this.navigation.selected, Some("Welcome.md".into()));
+            });
+        }
+
+        #[gpui::test]
         fn tab_drag_close_and_keyboard_preserve_active_document(cx: &mut TestAppContext) {
             let folder = tempfile::tempdir().unwrap();
             for name in ["A", "B", "C"] {
@@ -814,7 +893,7 @@ mod workspace {
             click(cx, "tab-0");
             view.read_with(cx, |this, _| assert!(this.explorer_menu.is_none()));
             // A shortcut displayed in the menu also works while it is open.
-            right_click(cx, "vault-location");
+            right_click_explorer_space(cx);
             cx.simulate_keystrokes("ctrl-n");
             cx.simulate_input("From shortcut");
             cx.simulate_keystrokes("enter");
@@ -960,6 +1039,232 @@ mod workspace {
         }
 
         #[gpui::test]
+        fn explorer_toolbar_creates_sorts_and_follows_navigation(cx: &mut TestAppContext) {
+            use opalglass::navigation::SortOrder;
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(folder.path().join("Zed/Deep")).unwrap();
+            std::fs::write(folder.path().join("Zed/Deep/Note.md"), "nested").unwrap();
+            std::fs::write(folder.path().join("Welcome.md"), "welcome").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            let toolbar = cx.debug_bounds("explorer-toolbar").unwrap();
+            assert!(toolbar.top() < gpui::px(1.));
+            assert_eq!(cx.debug_bounds("sidebar-rail").unwrap().size.width, gpui::px(super::SIDEBAR_RAIL_WIDTH));
+            view.update(cx, |this, _| this.navigation.selected = Some("Zed".into()));
+            click(cx, "explorer-new-folder");
+            cx.simulate_input("Created");
+            cx.simulate_keystrokes("enter");
+            assert!(folder.path().join("Created").is_dir());
+            click(cx, "explorer-new-note");
+            cx.simulate_input("Toolbar");
+            cx.simulate_keystrokes("enter");
+            assert!(folder.path().join("Toolbar.md").is_file());
+            click(cx, "explorer-sort");
+            assert!(cx.debug_bounds("sort-menu").is_some());
+            click(cx, "sort-option-1");
+            view.read_with(cx, |this, _| {
+                assert_eq!(this.navigation.sort, SortOrder::NameDescending);
+                assert_eq!(this.tree.visible[0].name(), "Zed");
+            });
+            click(cx, "explorer-sort");
+            cx.simulate_keystrokes("up enter");
+            view.read_with(cx, |this, _| assert_eq!(this.navigation.sort, SortOrder::NameAscending));
+            click(cx, "explorer-auto-reveal");
+            view.update_in(cx, |this, w, cx| this.open_note("Zed/Deep/Note.md".into(), w, cx));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                assert!(this.navigation.auto_reveal);
+                assert_eq!(this.navigation.selected, Some("Zed/Deep/Note.md".into()));
+                assert!(this.navigation.expanded.contains(&PathBuf::from("Zed/Deep")));
+            });
+            click(cx, "explorer-collapse-all");
+            view.update(cx, |_, cx| cx.notify()); // No immediate re-expansion of the same active note.
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.navigation.expanded.is_empty()));
+            click(cx, "explorer-collapse-all");
+            view.read_with(cx, |this, _| assert_eq!(this.navigation.expanded.len(), 3));
+            click(cx, "explorer-collapse-all");
+            click(cx, "explorer-auto-reveal");
+            cx.simulate_keystrokes("ctrl-1 ctrl-9");
+            view.read_with(cx, |this, _| assert!(this.navigation.expanded.is_empty()));
+            click(cx, "toggle-sidebar");
+            view.read_with(cx, |this, _| assert!(this.navigation.hidden));
+            assert_eq!(cx.debug_bounds("tab-0").unwrap().left(), gpui::px(super::SIDEBAR_RAIL_WIDTH));
+            assert!(cx.debug_bounds("sidebar-rail").is_some());
+            click(cx, "toggle-sidebar");
+            view.read_with(cx, |this, _| assert!(!this.navigation.hidden));
+            assert!(cx.debug_bounds("tab-0").unwrap().left() > gpui::px(270.));
+        }
+
+        #[gpui::test]
+        fn explorer_toolbar_requires_a_vault(cx: &mut TestAppContext) {
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(None, w, cx));
+            for id in ["explorer-new-note", "explorer-new-folder", "explorer-sort", "explorer-auto-reveal", "explorer-collapse-all"] {
+                click(cx, id);
+            }
+            view.read_with(cx, |this, _| {
+                assert!(this.modal == super::Modal::None);
+                assert!(this.sort_menu.is_none());
+                assert!(!this.navigation.auto_reveal);
+            });
+        }
+
+        #[gpui::test]
+        fn split_scroll_lock_follows_source_and_unlocks(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let text = (0..300).map(|i| format!("# Section {i}\n\nA **formatted** paragraph with [[Alias|short text]].\n\n\n> A quotation\n\n- item\n\n")).collect::<String>();
+            std::fs::write(folder.path().join("A.md"), &text).unwrap();
+            std::fs::write(folder.path().join("B.md"), &text).unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+            cx.run_until_parked();
+            let wheel = |cx: &mut gpui::VisualTestContext, pane, delta| {
+                let position = cx.debug_bounds(pane).unwrap().center();
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position,
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(delta))),
+                    ..Default::default()
+                });
+                cx.run_until_parked();
+            };
+            let assert_aligned = |cx: &gpui::VisualTestContext| {
+                view.read_with(cx, |this, cx| {
+                    let tab = &this.tabs[this.active];
+                    let (_, byte) = tab.editor.read(cx).scroll_anchor.unwrap();
+                    let expected = tab.prepared.rows.partition_point(|row| row.source.start as f64 <= byte).saturating_sub(1);
+                    let actual = tab.preview_scroll.logical_scroll_top();
+                    // A blank source line can map exactly to the end of a preview row.
+                    assert!(actual.item_ix.abs_diff(expected) <= 1, "expected {expected}, got {} at {byte}", actual.item_ix);
+                });
+            };
+            wheel(cx, "source-pane", -700.);
+            view.read_with(cx, |this, _| assert_eq!(this.tabs[this.active].preview_scroll.logical_scroll_top().item_ix, 0));
+            click(cx, "lock-reading-scroll");
+            cx.run_until_parked();
+            assert_aligned(cx);
+            let sidebar_before = view.read_with(cx, |this, cx| this.sidebar.read(cx).render_count);
+            for _ in 0..5 { wheel(cx, "source-pane", -95.); assert_aligned(cx); }
+            view.read_with(cx, |this, cx| assert_eq!(this.sidebar.read(cx).render_count, sidebar_before));
+            let before = view.read_with(cx, |this, cx| this.tabs[this.active].editor.read(cx).scroll_anchor.unwrap().1);
+            wheel(cx, "preview-pane", -170.);
+            let after = view.read_with(cx, |this, cx| this.tabs[this.active].editor.read(cx).scroll_anchor.unwrap().1);
+            assert!(after > before, "locked reading wheel should scroll the editor too: {before} -> {after}");
+            assert_aligned(cx);
+            // Keyboard navigation, reflow, and switching tabs must resynchronize too.
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |editor, cx| {
+                let at = editor.buffer.text().find("# Section 90").unwrap();
+                editor.jump_to(at, cx);
+            }));
+            cx.run_until_parked();
+            assert_aligned(cx);
+            cx.simulate_resize(gpui::size(gpui::px(950.), gpui::px(700.)));
+            cx.run_until_parked();
+            assert_aligned(cx);
+            view.update_in(cx, |this, w, cx| this.open_note("B.md".into(), w, cx));
+            cx.run_until_parked();
+            assert_aligned(cx);
+            wheel(cx, "source-pane", -600.);
+            assert_aligned(cx);
+            click(cx, "source");
+            wheel(cx, "source-pane", -400.);
+            click(cx, "split");
+            cx.run_until_parked();
+            assert_aligned(cx);
+            // Rebuilding the preview after edits must retain source mapping.
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |editor, cx| {
+                editor.buffer.replace(0..0, "# Inserted\n\n");
+                editor.jump_to(0, cx);
+            }));
+            cx.run_until_parked();
+            cx.executor().advance_clock(std::time::Duration::from_millis(75));
+            cx.run_until_parked();
+            wheel(cx, "source-pane", -600.);
+            assert_aligned(cx);
+            click(cx, "lock-reading-scroll");
+            cx.run_until_parked();
+            let before = view.read_with(cx, |this, _| this.tabs[this.active].preview_scroll.logical_scroll_top());
+            wheel(cx, "source-pane", -250.);
+            view.read_with(cx, |this, _| {
+                let after = this.tabs[this.active].preview_scroll.logical_scroll_top();
+                assert_eq!(after.item_ix, before.item_ix);
+                assert_eq!(after.offset_in_item, before.offset_in_item);
+            });
+            let before = view.read_with(cx, |this, cx| this.tabs[this.active].editor.read(cx).scroll_anchor);
+            wheel(cx, "preview-pane", -250.);
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).scroll_anchor, before));
+            click(cx, "lock-reading-scroll");
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |editor, cx| {
+                editor.jump_to(editor.buffer.text().len(), cx);
+            }));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                let tab = &this.tabs[this.active];
+                assert!(tab.preview_scroll.bounds_for_item(tab.prepared.rows.len() - 1).is_some());
+            });
+        }
+
+        #[gpui::test]
+        fn split_divider_resizes_and_preserves_layout(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "# First\nSome text").unwrap();
+            std::fs::write(folder.path().join("B.md"), "# Second").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| {
+                Workspace::new(Some(folder.path().into()), w, cx)
+            });
+            cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+            click(cx, "split");
+            let initial = cx.debug_bounds("source-pane").unwrap();
+            let divider = cx.debug_bounds("split-resize").unwrap().center();
+            // Grab off-center so a press without movement must not jump.
+            let grab = divider + gpui::point(gpui::px(2.), gpui::px(0.));
+            cx.simulate_mouse_down(grab, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_move(grab, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert!((f32::from(cx.debug_bounds("source-pane").unwrap().size.width - initial.size.width)).abs() < 1.);
+            let target = grab + gpui::point(gpui::px(120.), gpui::px(0.));
+            cx.simulate_mouse_move(target, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_up(target, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.run_until_parked();
+            let resized = cx.debug_bounds("source-pane").unwrap();
+            assert!((f32::from(resized.size.width - initial.size.width) - 120.).abs() < 1.);
+            let ratio = view.read_with(cx, |this, _| {
+                assert!(this.split_drag_offset.is_none());
+                this.split_ratio
+            });
+            // Mouse movement after release cannot continue resizing.
+            cx.simulate_mouse_move(grab, gpui::MouseButton::Left, gpui::Modifiers::default());
+            view.read_with(cx, |this, _| assert_eq!(this.split_ratio, ratio));
+            click(cx, "reading");
+            view.read_with(cx, |this, _| assert!(this.mode == super::ViewMode::Preview));
+            click(cx, "source");
+            view.read_with(cx, |this, _| assert!(this.mode == super::ViewMode::Source));
+            click(cx, "split");
+            view.update_in(cx, |this, w, cx| this.open_note("B.md".into(), w, cx));
+            cx.run_until_parked();
+            assert!((f32::from(cx.debug_bounds("source-pane").unwrap().size.width - resized.size.width)).abs() < 1.);
+            // Geometry must follow sidebar and window changes, not a fixed origin.
+            cx.simulate_keystrokes("ctrl-b");
+            cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+            cx.run_until_parked();
+            let bounds = cx.debug_bounds("note-panes").unwrap();
+            let source = cx.debug_bounds("source-pane").unwrap();
+            assert!((f32::from(source.size.width) / (f32::from(bounds.size.width) - super::SPLIT_DIVIDER_WIDTH) - ratio).abs() < 0.005);
+            // Dragging to the edge still leaves a usable reading pane.
+            let from = cx.debug_bounds("split-resize").unwrap().center();
+            let to = gpui::point(bounds.right() - gpui::px(1.), from.y);
+            cx.simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("preview-pane").unwrap().size.width >= gpui::px(159.));
+            // Icon actions still use the existing confirmation dialogs.
+            click(cx, "copy");
+            view.read_with(cx, |this, _| assert!(this.modal == super::Modal::Copy));
+            cx.simulate_keystrokes("escape");
+            click(cx, "reload");
+            view.read_with(cx, |this, _| assert!(this.modal == super::Modal::Reload));
+        }
+
+        #[gpui::test]
         fn sidebar_resize_hide_and_per_vault_restore(cx: &mut TestAppContext) {
             let first = tempfile::tempdir().unwrap();
             let second = tempfile::tempdir().unwrap();
@@ -974,18 +1279,19 @@ mod workspace {
                 view.open_vault(first.path().into(), window, cx);
                 view
             });
+            let resize_position = cx.debug_bounds("sidebar-resize").unwrap().center();
             cx.simulate_mouse_down(
-                gpui::point(gpui::px(272.), gpui::px(300.)),
+                resize_position,
                 gpui::MouseButton::Left,
                 gpui::Modifiers::default(),
             );
             cx.simulate_mouse_move(
-                gpui::point(gpui::px(355.), gpui::px(300.)),
+                gpui::point(gpui::px(355. + super::SIDEBAR_RAIL_WIDTH), gpui::px(300.)),
                 gpui::MouseButton::Left,
                 gpui::Modifiers::default(),
             );
             cx.simulate_mouse_up(
-                gpui::point(gpui::px(355.), gpui::px(300.)),
+                gpui::point(gpui::px(355. + super::SIDEBAR_RAIL_WIDTH), gpui::px(300.)),
                 gpui::MouseButton::Left,
                 gpui::Modifiers::default(),
             );

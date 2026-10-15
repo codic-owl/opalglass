@@ -15,33 +15,10 @@ serde_json = "=1.0.145"
 rustix = { version = "=1.1.2", features = ["fs"] }
 
 [profile.dev]
+# Optimize all runtime dependencies so native rendering stays responsive.
+# Keep the target's default CPU baseline for portable builds.
+opt-level = 2
 debug = 0
-
-# Keep `cargo run` responsive too: text indexing and GPUI's layout trees are
-# prohibitively slow without optimization. Other dependencies retain fast builds.
-[profile.dev.package.opalglass]
-opt-level = 2
-
-[profile.dev.package.gpui]
-opt-level = 2
-
-# The native Linux renderer calls these crates for font shaping, glyph
-# rasterization and layout. Optimizing GPUI alone leaves this work unoptimized;
-# the simulated UI platform does not exercise the native font stack.
-[profile.dev.package.cosmic-text]
-opt-level = 2
-
-[profile.dev.package.rustybuzz]
-opt-level = 2
-
-[profile.dev.package.ttf-parser]
-opt-level = 2
-
-[profile.dev.package.swash]
-opt-level = 2
-
-[profile.dev.package.taffy]
-opt-level = 2
 
 [profile.release]
 lto = "thin"

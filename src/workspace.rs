@@ -4,7 +4,7 @@ use gpui::{prelude::*, *};
 use opalglass::{
     buffer::Buffer,
     markdown,
-    navigation::{self, State as NavigationState, Tree},
+    navigation::{self, SortOrder, State as NavigationState, Tree},
     prepared::{Kind, Prepared, PreviewRow},
     search::{Engine as SearchEngine, Hit as SearchHit, SearchIndex, Snippet, Snippets, Ticket},
     vault::Vault,
@@ -12,6 +12,7 @@ use opalglass::{
 use std::{
     cell::Cell,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -25,6 +26,8 @@ const LINE: u32 = 0x2b3140;
 const MUTED: u32 = 0x8c95aa;
 const TEXT: u32 = 0xdce0eb;
 const ACCENT: u32 = 0xb8a5fa;
+const SIDEBAR_RAIL_WIDTH: f32 = 36.;
+const SPLIT_DIVIDER_WIDTH: f32 = 7.;
 
 struct Tab {
     path: PathBuf,
@@ -45,6 +48,7 @@ struct Tab {
     connections_cache: Option<ConnectionSnapshot>,
     connections_scroll: UniformListScrollHandle,
     _subscription: Subscription,
+    _scroll_subscription: Subscription,
 }
 impl Tab {
     fn cancel_opening_analysis(&mut self) {
@@ -129,6 +133,9 @@ pub struct Workspace {
     modal: Modal,
     inline_parent: Option<PathBuf>,
     explorer_menu: Option<ExplorerMenu>,
+    sort_menu: Option<Point<Pixels>>,
+    sort_selected: usize,
+    auto_revealed: Option<PathBuf>,
     move_candidates: Vec<PathBuf>,
     move_results: Vec<PathBuf>,
     move_query: String,
@@ -176,6 +183,10 @@ pub struct Workspace {
     tree_revision: u64,
     tree_focus: FocusHandle,
     resizing_sidebar: bool,
+    split_ratio: f32,
+    scroll_locked: bool,
+    split_bounds: Rc<Cell<Bounds<Pixels>>>,
+    split_drag_offset: Option<f32>,
     typeahead: String,
     typeahead_at: std::time::Instant,
     state_directory: Option<PathBuf>,
@@ -214,6 +225,192 @@ fn caption(text: impl Into<SharedString>) -> Div {
     div().text_xs().text_color(rgb(MUTED)).child(text.into())
 }
 
+#[derive(Clone, Copy)]
+enum ToolbarIcon {
+    Locked,
+    Unlocked,
+    Source,
+    Split,
+    Reading,
+    Save,
+    Copy,
+    Reload,
+    Panel,
+    NewNote,
+    NewFolder,
+    Sort,
+    AutoReveal,
+    Collapse,
+    Expand,
+}
+
+fn icon_button(id: &'static str, icon: ToolbarIcon, label: String, enabled: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .size(px(28.))
+        .flex_shrink_0()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(enabled, |el| {
+            el.cursor_pointer().hover(|s| s.bg(rgb(0x303749)))
+        })
+        .when(!enabled, |el| el.opacity(0.35))
+        .tooltip(move |_, cx| cx.new(|_| PathTooltip(label.clone())).into())
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    // Small native vector icons, using a consistent 24-unit grid.
+                    let lines: &[&[(f32, f32)]] = match icon {
+                        ToolbarIcon::Locked => &[
+                            &[(5., 10.), (19., 10.), (19., 21.), (5., 21.), (5., 10.)],
+                            &[
+                                (8., 10.),
+                                (8., 6.),
+                                (9., 3.),
+                                (15., 3.),
+                                (16., 6.),
+                                (16., 10.),
+                            ],
+                            &[(12., 14.), (12., 17.)],
+                        ],
+                        ToolbarIcon::Unlocked => &[
+                            &[(5., 10.), (19., 10.), (19., 21.), (5., 21.), (5., 10.)],
+                            &[(8., 10.), (8., 6.), (9., 3.), (15., 3.), (16., 6.)],
+                            &[(12., 14.), (12., 17.)],
+                        ],
+                        ToolbarIcon::Source => &[
+                            &[(8., 6.), (2., 12.), (8., 18.)],
+                            &[(16., 6.), (22., 12.), (16., 18.)],
+                            &[(14., 3.), (10., 21.)],
+                        ],
+                        ToolbarIcon::Split => &[
+                            &[(3., 4.), (21., 4.), (21., 20.), (3., 20.), (3., 4.)],
+                            &[(12., 4.), (12., 20.)],
+                        ],
+                        ToolbarIcon::Reading => &[&[
+                            (12., 6.),
+                            (9., 4.),
+                            (2., 4.),
+                            (2., 19.),
+                            (9., 19.),
+                            (12., 21.),
+                            (15., 19.),
+                            (22., 19.),
+                            (22., 4.),
+                            (15., 4.),
+                            (12., 6.),
+                            (12., 21.),
+                        ]],
+                        ToolbarIcon::Save => &[
+                            &[
+                                (3., 3.),
+                                (17., 3.),
+                                (21., 7.),
+                                (21., 21.),
+                                (3., 21.),
+                                (3., 3.),
+                            ],
+                            &[(7., 3.), (7., 9.), (16., 9.), (16., 3.)],
+                            &[(7., 21.), (7., 14.), (17., 14.), (17., 21.)],
+                        ],
+                        ToolbarIcon::Copy => &[
+                            &[(8., 8.), (21., 8.), (21., 21.), (8., 21.), (8., 8.)],
+                            &[(16., 5.), (16., 2.), (2., 2.), (2., 16.), (5., 16.)],
+                        ],
+                        ToolbarIcon::Reload => &[
+                            &[
+                                (20., 10.),
+                                (18., 6.),
+                                (14., 3.),
+                                (9., 3.),
+                                (5., 5.),
+                                (3., 9.),
+                                (3., 14.),
+                                (6., 19.),
+                                (11., 21.),
+                                (16., 20.),
+                                (20., 16.),
+                            ],
+                            &[(20., 3.), (20., 10.), (13., 10.)],
+                        ],
+                        ToolbarIcon::Panel => &[
+                            &[(4., 3.), (20., 3.), (20., 21.), (4., 21.), (4., 3.)],
+                            &[(9., 3.), (9., 21.)],
+                        ],
+                        ToolbarIcon::NewNote => &[
+                            &[(10., 5.), (4., 5.), (4., 21.), (20., 21.), (20., 14.)],
+                            &[
+                                (10., 14.),
+                                (11., 10.),
+                                (19., 2.),
+                                (22., 5.),
+                                (14., 13.),
+                                (10., 14.),
+                            ],
+                            &[(17., 4.), (20., 7.)],
+                        ],
+                        ToolbarIcon::NewFolder => &[
+                            &[
+                                (3., 6.),
+                                (9., 6.),
+                                (11., 9.),
+                                (21., 9.),
+                                (21., 20.),
+                                (3., 20.),
+                                (3., 6.),
+                            ],
+                            &[(12., 11.), (12., 17.)],
+                            &[(9., 14.), (15., 14.)],
+                        ],
+                        ToolbarIcon::Sort => &[
+                            &[(5., 20.), (5., 4.)],
+                            &[(2., 7.), (5., 4.), (8., 7.)],
+                            &[(11., 6.), (15., 6.)],
+                            &[(11., 12.), (18., 12.)],
+                            &[(11., 18.), (22., 18.)],
+                        ],
+                        ToolbarIcon::AutoReveal => &[
+                            &[(4., 3.), (20., 3.)],
+                            &[(4., 21.), (20., 21.)],
+                            &[(4., 7.), (20., 7.), (20., 17.), (4., 17.), (4., 7.)],
+                        ],
+                        ToolbarIcon::Collapse => &[
+                            &[(7., 3.), (12., 8.), (17., 3.)],
+                            &[(7., 21.), (12., 16.), (17., 21.)],
+                        ],
+                        ToolbarIcon::Expand => &[
+                            &[(7., 8.), (12., 3.), (17., 8.)],
+                            &[(7., 16.), (12., 21.), (17., 16.)],
+                        ],
+                    };
+                    for line in lines {
+                        let mut path = PathBuilder::stroke(px(1.5));
+                        for (index, &(x, y)) in line.iter().enumerate() {
+                            let p = bounds.origin
+                                + point(
+                                    bounds.size.width * (x / 24.),
+                                    bounds.size.height * (y / 24.),
+                                );
+                            if index == 0 {
+                                path.move_to(p);
+                            } else {
+                                path.line_to(p);
+                            }
+                        }
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, rgb(MUTED));
+                        }
+                    }
+                },
+            )
+            .size(px(18.)),
+        )
+}
+
 fn external_link(target: &str) -> bool {
     target.starts_with("https://") || target.starts_with("http://") || target.starts_with("mailto:")
 }
@@ -229,6 +426,7 @@ impl Workspace {
             owner: owner.clone(),
         });
         let preview_pane = cx.new(|_| PreviewPane {
+            pending_sync: None,
             #[cfg(test)]
             render_count: 0,
             owner: owner.clone(),
@@ -250,6 +448,7 @@ impl Workspace {
                 // Invalidate cached children before GPUI starts the next frame.
                 this.update_indexing(cx);
                 this.update_link_styles(cx);
+                this.sync_auto_reveal();
                 this.update_panes(cx);
                 this.sidebar.update(cx, |_, cx| cx.notify());
             }),
@@ -303,6 +502,9 @@ impl Workspace {
             modal: Modal::None,
             inline_parent: None,
             explorer_menu: None,
+            sort_menu: None,
+            sort_selected: 0,
+            auto_revealed: None,
             move_candidates: Vec::new(),
             move_results: Vec::new(),
             move_query: String::new(),
@@ -350,6 +552,10 @@ impl Workspace {
             tree_revision: u64::MAX,
             tree_focus: cx.focus_handle(),
             resizing_sidebar: false,
+            split_ratio: 0.5,
+            scroll_locked: false,
+            split_bounds: Rc::new(Cell::new(Bounds::default())),
+            split_drag_offset: None,
             typeahead: String::new(),
             typeahead_at: std::time::Instant::now(),
             state_directory: if cfg!(test) {
@@ -467,6 +673,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         self.focus_document(window, cx);
         self.message("Opening vault…", false, cx);
         let state_directory = self.state_directory.clone();
@@ -522,8 +729,10 @@ impl Workspace {
                     .or_else(|| vault.notes.first())
                     .map(|n| n.path.clone());
                 self.navigation = state;
+                self.auto_revealed = None;
                 self.persisted_navigation = Some(self.navigation.clone());
-                self.tree.rebuild(&vault, &self.navigation.expanded);
+                self.tree
+                    .rebuild(&vault, &self.navigation.expanded, self.navigation.sort);
                 self.tree_revision = self.revision;
                 self.vault = Some(vault);
                 if let Some(index) = self.search_index.take() {
@@ -551,6 +760,7 @@ impl Workspace {
                 self.modal = Modal::None;
                 self.inline_parent = None;
                 self.explorer_menu = None;
+                self.sort_menu = None;
                 self.message("Vault opened", false, cx);
                 if let Some(path) = first {
                     self.open_note(path, window, cx);
@@ -678,7 +888,8 @@ impl Workspace {
     fn update_tree(&mut self) {
         if self.tree_revision != self.revision {
             if let Some(vault) = &self.vault {
-                self.tree.rebuild(vault, &self.navigation.expanded);
+                self.tree
+                    .rebuild(vault, &self.navigation.expanded, self.navigation.sort);
             }
             self.tree_revision = self.revision;
         }
@@ -688,6 +899,34 @@ impl Workspace {
             self.navigation.expanded.insert(path);
         }
         self.tree.flatten(&self.navigation.expanded);
+        cx.notify();
+    }
+    fn sync_auto_reveal(&mut self) {
+        if !self.navigation.auto_reveal {
+            self.auto_revealed = None;
+            return;
+        }
+        let path = self.tabs.get(self.active).map(|tab| tab.path.clone());
+        if path != self.auto_revealed {
+            self.auto_revealed = path.clone();
+            if let Some(path) = path {
+                // Follow navigation without stealing focus, clearing a search,
+                // or reopening a sidebar the user deliberately collapsed.
+                self.reveal_path(&path);
+            }
+        }
+    }
+    fn set_sort(&mut self, order: SortOrder, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigation.sort = order;
+        self.sort_menu = None;
+        self.tree_revision = u64::MAX;
+        self.update_tree();
+        self.notes_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(0.)));
+        self.focus_document(window, cx);
         cx.notify();
     }
     fn reveal_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1102,6 +1341,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         self.focus.focus(window);
         self.message("Opening note…", false, cx);
         self.note_loading = true;
@@ -1162,6 +1402,18 @@ impl Workspace {
                                 cx.notify();
                             }
                         });
+                        let scroll_subscription = cx.subscribe(
+                            &editor,
+                            |this, editor, _: &crate::editor::ScrollAnchor, cx| {
+                                if this
+                                    .tabs
+                                    .get(this.active)
+                                    .is_some_and(|tab| tab.editor == editor)
+                                {
+                                    this.sync_reading_scroll(cx);
+                                }
+                            },
+                        );
                         let complete = prepared.complete;
                         this.tabs.push(Tab {
                             path,
@@ -1186,6 +1438,7 @@ impl Workspace {
                             prepare_cancelled: Arc::new(AtomicBool::new(false)),
                             editor,
                             _subscription: subscription,
+                            _scroll_subscription: scroll_subscription,
                         });
                         this.active = this.tabs.len() - 1;
                         this.message("Note opened", false, cx);
@@ -1235,6 +1488,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         self.focus_document(window, cx);
         cx.notify();
     }
@@ -1293,13 +1547,196 @@ impl Workspace {
             ..Default::default()
         }
     }
+    fn explorer_toolbar(&self, cx: &mut Context<Self>) -> Div {
+        let enabled = self.vault.is_some() && !self.managing;
+        let expanded = !self.navigation.expanded.is_empty();
+        div()
+            .debug_selector(|| "explorer-toolbar".into())
+            .h(px(43.))
+            .flex_shrink_0()
+            .px_2()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_1()
+            .child(
+                icon_button(
+                    "explorer-new-note",
+                    ToolbarIcon::NewNote,
+                    "New note".into(),
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| {
+                        this.navigation.selected = None;
+                        this.show_inline(Modal::New, window, cx);
+                    }))
+                }),
+            )
+            .child(
+                icon_button(
+                    "explorer-new-folder",
+                    ToolbarIcon::NewFolder,
+                    "New folder".into(),
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| {
+                        this.navigation.selected = None;
+                        this.show_inline(Modal::NewFolder, window, cx);
+                    }))
+                }),
+            )
+            .child(
+                icon_button(
+                    "explorer-sort",
+                    ToolbarIcon::Sort,
+                    "Change sort order".into(),
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| {
+                        let open = this.sort_menu.is_none();
+                        this.dismiss(window, cx);
+                        if open {
+                            this.sort_menu = Some(window.mouse_position() + point(px(0.), px(12.)));
+                            this.sort_selected = SortOrder::ALL
+                                .iter()
+                                .position(|s| *s == this.navigation.sort)
+                                .unwrap_or(0);
+                            this.focus.focus(window);
+                        }
+                        cx.notify();
+                    }))
+                }),
+            )
+            .child(
+                icon_button(
+                    "explorer-auto-reveal",
+                    ToolbarIcon::AutoReveal,
+                    format!(
+                        "Auto-reveal current file · {}",
+                        if self.navigation.auto_reveal {
+                            "On"
+                        } else {
+                            "Off"
+                        }
+                    ),
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| {
+                        this.dismiss(window, cx);
+                        this.navigation.auto_reveal = !this.navigation.auto_reveal;
+                        this.auto_revealed = None;
+                        this.sync_auto_reveal();
+                        cx.notify();
+                    }))
+                }),
+            )
+            .child(
+                icon_button(
+                    "explorer-collapse-all",
+                    if expanded {
+                        ToolbarIcon::Collapse
+                    } else {
+                        ToolbarIcon::Expand
+                    },
+                    if expanded {
+                        "Collapse all"
+                    } else {
+                        "Expand all"
+                    }
+                    .into(),
+                    enabled,
+                )
+                .when(enabled, |el| {
+                    el.on_click(cx.listener(|this, _, window, cx| {
+                        this.dismiss(window, cx);
+                        this.search.update(cx, |editor, cx| editor.set_text("", cx));
+                        if this.navigation.expanded.is_empty() {
+                            this.navigation.expanded = this
+                                .vault
+                                .as_ref()
+                                .unwrap()
+                                .folders
+                                .iter()
+                                .cloned()
+                                .collect();
+                        } else {
+                            this.navigation.expanded.clear();
+                            this.navigation.selected = None;
+                        }
+                        this.tree.flatten(&this.navigation.expanded);
+                        this.notes_scroll
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(point(px(0.), px(0.)));
+                        cx.notify();
+                    }))
+                }),
+            )
+    }
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut content = div()
+            .id("sort-menu")
+            .debug_selector(|| "sort-menu".into())
+            .w(px(258.))
+            .p_1()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(LINE))
+            .bg(rgb(PANEL))
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.sort_menu = None;
+                cx.notify();
+            }));
+        for (index, order) in SortOrder::ALL.into_iter().enumerate() {
+            content = content.child(
+                div()
+                    .id(("sort-option", index))
+                    .debug_selector(move || format!("sort-option-{index}"))
+                    .h(px(32.))
+                    .px_3()
+                    .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_sm()
+                    .cursor_pointer()
+                    .when(index == self.sort_selected, |el| el.bg(rgb(0x343049)))
+                    .hover(|s| s.bg(rgb(0x343049)))
+                    .child(order.label())
+                    .child(if self.navigation.sort == order {
+                        "✓"
+                    } else {
+                        ""
+                    })
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.sort_selected != index {
+                            this.sort_selected = index;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_sort(order, window, cx);
+                        cx.stop_propagation();
+                    })),
+            );
+        }
+        deferred(
+            anchored()
+                .position(self.sort_menu.unwrap())
+                .snap_to_window_with_margin(px(8.))
+                .child(content),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let vault_name = self
-            .vault
-            .as_ref()
-            .and_then(|v| v.root.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or("No vault open".into());
         let mut sidebar = div()
             .w(px(self.navigation.width))
             .h_full()
@@ -1309,49 +1746,7 @@ impl Workspace {
             .border_color(rgb(LINE))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .p_5()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(ACCENT))
-                            .child("◈  opalglass"),
-                    )
-                    .child(
-                        self.folder_drop_target(
-                            div()
-                                .id("vault-location")
-                                .debug_selector(|| "vault-location".into())
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_sm()
-                                .text_color(rgb(MUTED))
-                                .hover(|s| s.bg(rgb(0x292e3e)))
-                                .child(vault_name)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dismiss(window, cx);
-                                    this.navigation.selected = None;
-                                    this.tree_focus.focus(window);
-                                    cx.notify();
-                                }))
-                                .on_mouse_down(
-                                    MouseButton::Right,
-                                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                                        this.open_explorer_menu(None, event.position, window, cx);
-                                        cx.stop_propagation();
-                                    }),
-                                ),
-                            PathBuf::new(),
-                            cx,
-                        ),
-                    ),
-            )
+            .child(self.explorer_toolbar(cx))
             .child(
                 div()
                     .mx_3()
@@ -1379,7 +1774,7 @@ impl Workspace {
             .child(
                 div()
                     .px_4()
-                    .pt_5()
+                    .pt_3()
                     .pb_2()
                     .flex()
                     .justify_between()
@@ -1617,7 +2012,45 @@ impl Workspace {
                 );
         sidebar.into_any_element()
     }
+    fn sync_reading_scroll(&mut self, cx: &mut Context<Self>) {
+        if !self.scroll_locked || self.mode != ViewMode::Split {
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let Some((revision, byte)) = tab.editor.read(cx).scroll_anchor else {
+            return;
+        };
+        if revision != tab.prepared_revision || tab.prepared.rows.is_empty() {
+            return;
+        }
+        let index = tab
+            .prepared
+            .rows
+            .partition_point(|row| row.source.start as f64 <= byte)
+            .saturating_sub(1);
+        let range = &tab.prepared.rows[index].source;
+        let fraction =
+            ((byte - range.start as f64) / range.len().max(1) as f64).clamp(0., 1.) as f32;
+        let height = tab
+            .preview_scroll
+            .bounds_for_item(index)
+            .map_or(px(0.), |bounds| bounds.size.height);
+        tab.preview_scroll.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: height * fraction,
+        });
+        let scroll = tab.preview_scroll.clone();
+        self.preview_pane.update(cx, |pane, cx| {
+            // An offscreen row has no measured height yet. Correct its fractional
+            // offset after it is laid out, without measuring the rest of the note.
+            pane.pending_sync = Some((scroll, index, fraction));
+            cx.notify();
+        });
+    }
     fn update_panes(&mut self, cx: &mut Context<Self>) {
+        self.sync_reading_scroll(cx);
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -1815,6 +2248,7 @@ impl Workspace {
     fn set_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         let started = Instant::now();
         self.mode = mode;
+        self.split_drag_offset = None;
         self.focus_document(window, cx);
         cx.notify();
         self.log_performance(
@@ -1901,6 +2335,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         if !self.save_tab(index, cx) {
             self.activate_tab(index, window, cx);
             self.log_performance("Close blocked", target, started, cx);
@@ -1939,6 +2374,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         self.focus_document(window, cx);
         if changed {
             cx.notify();
@@ -2525,6 +2961,7 @@ impl Workspace {
             return;
         }
         self.explorer_menu = None;
+        self.sort_menu = None;
         self.inline_parent = None;
         self.error = false;
         self.modal_target = self.navigation.selected.clone();
@@ -2591,6 +3028,7 @@ impl Workspace {
         self.modal = Modal::None;
         self.inline_parent = None;
         self.explorer_menu = None;
+        self.sort_menu = None;
         if inline {
             self.tree_focus.focus(window);
         } else {
@@ -2737,6 +3175,24 @@ impl Workspace {
             cx.notify();
             return;
         }
+        if self.sort_menu.is_some() {
+            match key {
+                "escape" => {
+                    self.sort_menu = None;
+                    self.focus_document(window, cx);
+                }
+                "down" => self.sort_selected = (self.sort_selected + 1) % SortOrder::ALL.len(),
+                "up" => {
+                    self.sort_selected =
+                        (self.sort_selected + SortOrder::ALL.len() - 1) % SortOrder::ALL.len()
+                }
+                "enter" | "space" => self.set_sort(SortOrder::ALL[self.sort_selected], window, cx),
+                _ => (),
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.explorer_menu.is_some() {
             let action = if command && key == "n" {
                 Some(if shift { Modal::NewFolder } else { Modal::New })
@@ -2755,6 +3211,7 @@ impl Workspace {
             match key {
                 "escape" => {
                     self.explorer_menu = None;
+                    self.sort_menu = None;
                 }
                 "down" => menu.selected = (menu.selected + 1) % actions.len(),
                 "up" => menu.selected = (menu.selected + actions.len() - 1) % actions.len(),
@@ -2923,7 +3380,6 @@ impl Workspace {
                 .child(
                     button("empty-source", "Start writing")
                         .debug_selector(|| "empty-source".into())
-                        .bg(rgb(0x343049))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.set_mode(ViewMode::Source, window, cx)
                         })),
@@ -3113,22 +3569,6 @@ impl Render for Workspace {
             self.update_document(cx);
         }
         let mut main = div().flex_1().min_w_0().h_full().flex().flex_col();
-        main =
-            main.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        button("toggle-sidebar", "☰").on_click(cx.listener(|this, _, _, cx| {
-                            this.navigation.hidden = !this.navigation.hidden;
-                            cx.notify();
-                        })),
-                    )
-                    .child(button("reveal-active", "Reveal active note").on_click(
-                        cx.listener(|this, _, window, cx| this.reveal_active(window, cx)),
-                    )),
-            );
         let mut tabs = div()
             .id("tabs")
             .track_scroll(&self.tabs_scroll)
@@ -3231,9 +3671,14 @@ impl Render for Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         // Mouse press already activated this tab. Keep click
                         // activation for keyboard/accessibility without logging twice.
+                        if this.managing || index >= this.tabs.len() {
+                            return;
+                        }
                         if this.active != index {
                             this.activate_tab(index, window, cx);
                         }
+                        this.reveal_active(window, cx);
+                        this.focus_document(window, cx);
                     }))
                     .child(
                         div()
@@ -3287,37 +3732,66 @@ impl Render for Workspace {
                 .justify_between()
                 .border_b_1()
                 .border_color(rgb(LINE))
-                .child(caption(path.display().to_string()));
-            let mut modes = div().flex().gap_1();
-            for (id, label, mode) in [
-                ("source", "Source", ViewMode::Source),
-                ("split", "Split", ViewMode::Split),
-                ("reading", "Reading", ViewMode::Preview),
-            ] {
-                modes = modes.child(
-                    button(id, label)
-                        .when(self.mode == mode, |s| {
-                            s.bg(rgb(0x343049)).text_color(rgb(ACCENT))
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.set_mode(mode, window, cx);
-                        })),
+                .gap_3()
+                .child(
+                    caption(path.display().to_string())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate(),
                 );
+            let mut modes = div().flex().flex_shrink_0().gap_1();
+            for (id, label, icon, mode) in [
+                ("source", "Source", ToolbarIcon::Source, ViewMode::Source),
+                ("split", "Split", ToolbarIcon::Split, ViewMode::Split),
+                (
+                    "reading",
+                    "Reading",
+                    ToolbarIcon::Reading,
+                    ViewMode::Preview,
+                ),
+            ] {
+                let tooltip = if self.mode == mode {
+                    format!("{label} · Current view · Ctrl E to cycle views")
+                } else {
+                    format!("Switch to {label} · Ctrl E to cycle views")
+                };
+                modes = modes.child(icon_button(id, icon, tooltip, true).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.set_mode(mode, window, cx);
+                    },
+                )));
             }
             tools = tools.child(
                 modes
                     .child(div().w(px(8.)))
                     .child(
-                        button("save", "Save").on_click(cx.listener(|this, _, _, cx| {
-                            this.save_tab(this.active, cx);
-                        })),
+                        icon_button("save", ToolbarIcon::Save, "Save · Ctrl S".into(), true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_tab(this.active, cx);
+                            })),
                     )
-                    .child(button("copy", "Save copy").on_click(
-                        cx.listener(|this, _, w, cx| this.show_modal(Modal::Copy, w, cx)),
-                    ))
-                    .child(button("reload", "Reload").on_click(
-                        cx.listener(|this, _, w, cx| this.show_modal(Modal::Reload, w, cx)),
-                    )),
+                    .child(
+                        icon_button(
+                            "copy",
+                            ToolbarIcon::Copy,
+                            "Save copy · Ctrl Shift S".into(),
+                            true,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.show_modal(Modal::Copy, w, cx)),
+                        ),
+                    )
+                    .child(
+                        icon_button(
+                            "reload",
+                            ToolbarIcon::Reload,
+                            "Reload from disk".into(),
+                            true,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.show_modal(Modal::Reload, w, cx)),
+                        ),
+                    ),
             );
             main = main.child(tools);
             let mut panes = div()
@@ -3330,6 +3804,10 @@ impl Render for Workspace {
                     div()
                         .debug_selector(|| "source-pane".into())
                         .flex_1()
+                        .when(self.mode == ViewMode::Split, |mut pane| {
+                            pane.style().flex_grow = Some(self.split_ratio);
+                            pane
+                        })
                         .min_w_0()
                         .h_full()
                         .child(
@@ -3338,19 +3816,90 @@ impl Render for Workspace {
                 );
             }
             if self.mode == ViewMode::Split {
-                panes = panes.child(div().w(px(1.)).h_full().bg(rgb(LINE)));
+                let bounds = self.split_bounds.clone();
+                panes = panes
+                    .relative()
+                    .child(
+                        canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| ())
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(
+                        div()
+                            .id("split-resize")
+                            .debug_selector(|| "split-resize".into())
+                            .w(px(SPLIT_DIVIDER_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .cursor_col_resize()
+                            .hover(|s| s.bg(rgb(0x303749)))
+                            .flex()
+                            .justify_center()
+                            .child(div().w(px(1.)).h_full().bg(rgb(LINE)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    let bounds = this.split_bounds.get();
+                                    let available =
+                                        f32::from(bounds.size.width) - SPLIT_DIVIDER_WIDTH;
+                                    let center = f32::from(bounds.left())
+                                        + available * this.split_ratio
+                                        + SPLIT_DIVIDER_WIDTH / 2.;
+                                    this.split_drag_offset =
+                                        Some(f32::from(event.position.x) - center);
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                    );
             }
             if self.mode != ViewMode::Source {
                 panes = panes.child(
                     div()
                         .debug_selector(|| "preview-pane".into())
                         .flex_1()
+                        .when(self.mode == ViewMode::Split, |mut pane| {
+                            pane.style().flex_grow = Some(1. - self.split_ratio);
+                            pane
+                        })
                         .min_w_0()
                         .h_full()
                         .child(
                             AnyView::from(self.preview_pane.clone())
                                 .cached(StyleRefinement::default().size_full()),
-                        ),
+                        )
+                        .relative()
+                        .when(self.mode == ViewMode::Split, |pane| {
+                            pane.child(
+                                div().absolute().top(px(2.)).left(px(4.)).child(
+                                    icon_button(
+                                        "lock-reading-scroll",
+                                        if self.scroll_locked {
+                                            ToolbarIcon::Locked
+                                        } else {
+                                            ToolbarIcon::Unlocked
+                                        },
+                                        if self.scroll_locked {
+                                            "Unlock reading scroll"
+                                        } else {
+                                            "Lock reading scroll to editor"
+                                        }
+                                        .into(),
+                                        true,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.scroll_locked = !this.scroll_locked;
+                                            if !this.scroll_locked {
+                                                this.preview_pane
+                                                    .update(cx, |pane, _| pane.pending_sync = None);
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                            )
+                        }),
                 );
             }
             if tab.initial_frame_pending {
@@ -3397,38 +3946,34 @@ impl Render for Workspace {
                 ),
             );
         } else {
-            main = main.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .items_center()
-                    .gap_4()
-                    .child(div().text_size(px(52.)).text_color(rgb(ACCENT)).child("◈"))
-                    .child(
-                        div()
-                            .text_3xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("A little space to think."),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(MUTED))
-                            .child("Plain Markdown. Connected ideas. Entirely yours."),
-                    )
-                    .child(
-                        button("welcome-open", "Open a vault folder")
-                            .bg(rgb(0x343049))
-                            .text_color(rgb(ACCENT))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.pick_vault(window, cx)),
-                            ),
-                    )
-                    .child(caption(
-                        "Ctrl N  new note     ·     Ctrl P  find a note     ·     Ctrl S  save",
-                    )),
-            );
+            main =
+                main.child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .justify_center()
+                        .items_center()
+                        .gap_4()
+                        .child(div().text_size(px(52.)).text_color(rgb(ACCENT)).child("◈"))
+                        .child(
+                            div()
+                                .text_3xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("A little space to think."),
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(MUTED))
+                                .child("Plain Markdown. Connected ideas. Entirely yours."),
+                        )
+                        .child(button("welcome-open", "Open a vault folder").on_click(
+                            cx.listener(|this, _, window, cx| this.pick_vault(window, cx)),
+                        ))
+                        .child(caption(
+                            "Ctrl N  new note     ·     Ctrl P  find a note     ·     Ctrl S  save",
+                        )),
+                );
         }
         let metrics = self
             .tabs
@@ -3458,21 +4003,76 @@ impl Render for Workspace {
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if this.resizing_sidebar && event.pressed_button == Some(MouseButton::Left) {
-                    this.navigation.width = f32::from(event.position.x).clamp(180., 600.);
+                    this.navigation.width =
+                        (f32::from(event.position.x) - SIDEBAR_RAIL_WIDTH).clamp(180., 600.);
                     cx.notify();
+                } else if let Some(offset) = this.split_drag_offset
+                    && event.pressed_button == Some(MouseButton::Left)
+                {
+                    let bounds = this.split_bounds.get();
+                    let available = f32::from(bounds.size.width) - SPLIT_DIVIDER_WIDTH;
+                    if available > 0. {
+                        // Keep both panes usable, including in narrow windows.
+                        let minimum = (160. / available).min(0.5);
+                        this.split_ratio = ((f32::from(event.position.x - bounds.left())
+                            - offset
+                            - SPLIT_DIVIDER_WIDTH / 2.)
+                            / available)
+                            .clamp(minimum, 1. - minimum);
+                        cx.notify();
+                    }
                 } else {
                     this.resizing_sidebar = false;
+                    this.split_drag_offset = None;
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.resizing_sidebar = false),
+                cx.listener(|this, _, _, _| {
+                    this.resizing_sidebar = false;
+                    this.split_drag_offset = None;
+                }),
             )
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    .child(
+                        div()
+                            .debug_selector(|| "sidebar-rail".into())
+                            .w(px(SIDEBAR_RAIL_WIDTH))
+                            .h_full()
+                            .flex_shrink_0()
+                            .bg(rgb(0x181c25))
+                            .border_r_1()
+                            .border_color(rgb(LINE))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .pt(px(7.))
+                            .child(
+                                icon_button(
+                                    "toggle-sidebar",
+                                    ToolbarIcon::Panel,
+                                    if self.navigation.hidden {
+                                        "Expand sidebar · Ctrl B"
+                                    } else {
+                                        "Collapse sidebar · Ctrl B"
+                                    }
+                                    .into(),
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.navigation.hidden = !this.navigation.hidden;
+                                        this.sort_menu = None;
+                                        this.focus_document(window, cx);
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
                     .when(!self.navigation.hidden, |el| {
                         el.child(
                             div()
@@ -3487,6 +4087,7 @@ impl Render for Workspace {
                         .child(
                             div()
                                 .id("sidebar-resize")
+                                .debug_selector(|| "sidebar-resize".into())
                                 .w(px(5.))
                                 .h_full()
                                 .flex_shrink_0()
@@ -3534,6 +4135,9 @@ impl Render for Workspace {
                         metrics
                     })),
             );
+        if self.sort_menu.is_some() && !self.managing {
+            root = root.child(self.render_sort_menu(cx));
+        }
         if self.explorer_menu.is_some() && !self.managing {
             root = root.child(self.render_explorer_menu(cx));
         }
@@ -3632,14 +4236,9 @@ impl Render for Workspace {
                                     .child(button("cancel", "Cancel").on_click(
                                         cx.listener(|this, _, w, cx| this.dismiss(w, cx)),
                                     ))
-                                    .child(
-                                        button("confirm", action)
-                                            .bg(rgb(0x403758))
-                                            .text_color(rgb(0xd8ccff))
-                                            .on_click(
-                                                cx.listener(|this, _, w, cx| this.submit(w, cx)),
-                                            ),
-                                    ),
+                                    .child(button("confirm", action).on_click(
+                                        cx.listener(|this, _, w, cx| this.submit(w, cx)),
+                                    )),
                             ),
                     ),
             );
@@ -3828,6 +4427,7 @@ impl Render for PathTooltip {
 
 // Separate cached views keep scrolling confined to the pane that changed.
 struct PreviewPane {
+    pending_sync: Option<(ListState, usize, f32)>,
     #[cfg(test)]
     render_count: usize,
     owner: WeakEntity<Workspace>,
@@ -3838,9 +4438,58 @@ impl Render for PreviewPane {
         {
             self.render_count += 1;
         }
-        self.owner
+        let content = self
+            .owner
             .update(cx, |workspace, cx| workspace.preview(cx))
-            .unwrap_or_else(|_| div().into_any_element())
+            .unwrap_or_else(|_| div().into_any_element());
+        let pending = self.pending_sync.take();
+        let entity = cx.entity().downgrade();
+        let owner = self.owner.clone();
+        div().size_full().relative().child(content).child(
+            canvas(
+                |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                move |_, hitbox, window, cx| {
+                    if let Some((scroll, index, fraction)) = pending
+                        && let Some(row) = scroll.bounds_for_item(index)
+                    {
+                        let offset = row.size.height * fraction;
+                        let current = scroll.logical_scroll_top();
+                        if current.item_ix == index
+                            && (current.offset_in_item - offset).abs() > px(0.5)
+                        {
+                            // Apply once: the list may clamp near EOF, and retrying that
+                            // clamped position every frame would cause a redraw loop.
+                            window.defer(cx, move |_, cx| {
+                                scroll.scroll_to(ListOffset {
+                                    item_ix: index,
+                                    offset_in_item: offset,
+                                });
+                                let _ = entity.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    }
+                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                        if phase.capture() && hitbox.should_handle_scroll(window) {
+                            let _ = owner.update(cx, |workspace, cx| {
+                                if workspace.scroll_locked
+                                    && workspace.mode == ViewMode::Split
+                                    && let Some(tab) = workspace.tabs.get(workspace.active)
+                                {
+                                    tab.editor.update(cx, |editor, cx| {
+                                        editor.scroll_by(-event.delta.pixel_delta(px(20.)).y, cx);
+                                    });
+                                    cx.stop_propagation();
+                                }
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
     }
 }
 

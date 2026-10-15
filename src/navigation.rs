@@ -7,6 +7,38 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    #[default]
+    NameAscending,
+    NameDescending,
+    ModifiedNewest,
+    ModifiedOldest,
+    CreatedNewest,
+    CreatedOldest,
+}
+impl SortOrder {
+    pub const ALL: [Self; 6] = [
+        Self::NameAscending,
+        Self::NameDescending,
+        Self::ModifiedNewest,
+        Self::ModifiedOldest,
+        Self::CreatedNewest,
+        Self::CreatedOldest,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NameAscending => "File name (A to Z)",
+            Self::NameDescending => "File name (Z to A)",
+            Self::ModifiedNewest => "Modified time (new to old)",
+            Self::ModifiedOldest => "Modified time (old to new)",
+            Self::CreatedNewest => "Created time (new to old)",
+            Self::CreatedOldest => "Created time (old to new)",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub path: PathBuf,
@@ -29,7 +61,7 @@ pub struct Tree {
     pub visible: Vec<Entry>,
 }
 impl Tree {
-    pub fn rebuild(&mut self, vault: &Vault, expanded: &HashSet<PathBuf>) {
+    pub fn rebuild(&mut self, vault: &Vault, expanded: &HashSet<PathBuf>, order: SortOrder) {
         self.children.clear();
         for (path, folder) in vault
             .folders
@@ -46,8 +78,59 @@ impl Tree {
                     depth: path.components().count() - 1,
                 });
         }
+        // Metadata comes from the background vault scan; sorting never stats
+        // files on the UI thread. Unknown timestamps sort last in either direction.
+        let dates: HashMap<_, _> = vault
+            .notes
+            .iter()
+            .map(|n| (&n.path, (n.modified(), n.created())))
+            .collect();
         for children in self.children.values_mut() {
-            children.sort_by_cached_key(|e| (!e.folder, e.name().to_lowercase(), e.path.clone()));
+            let names: HashMap<_, _> = children
+                .iter()
+                .map(|e| (e.path.clone(), e.name().to_lowercase()))
+                .collect();
+            children.sort_by(|a, b| {
+                let alphabetical = || {
+                    names[&a.path]
+                        .cmp(&names[&b.path])
+                        .then(a.path.cmp(&b.path))
+                };
+                (!a.folder).cmp(&!b.folder).then_with(|| match order {
+                    SortOrder::NameAscending => alphabetical(),
+                    SortOrder::NameDescending => alphabetical().reverse(),
+                    _ if a.folder => alphabetical(),
+                    _ => {
+                        let date = |entry: &Entry| {
+                            dates.get(&entry.path).and_then(|&(modified, created)| {
+                                if matches!(
+                                    order,
+                                    SortOrder::ModifiedNewest | SortOrder::ModifiedOldest
+                                ) {
+                                    modified
+                                } else {
+                                    created
+                                }
+                            })
+                        };
+                        let (a_date, b_date) = (date(a), date(b));
+                        a_date
+                            .is_none()
+                            .cmp(&b_date.is_none())
+                            .then_with(|| {
+                                if matches!(
+                                    order,
+                                    SortOrder::ModifiedNewest | SortOrder::CreatedNewest
+                                ) {
+                                    b_date.cmp(&a_date)
+                                } else {
+                                    a_date.cmp(&b_date)
+                                }
+                            })
+                            .then_with(alphabetical)
+                    }
+                })
+            });
         }
         self.flatten(expanded);
     }
@@ -74,6 +157,8 @@ pub struct State {
     pub scroll_y: f32,
     pub width: f32,
     pub hidden: bool,
+    pub sort: SortOrder,
+    pub auto_reveal: bool,
 }
 impl Default for State {
     fn default() -> Self {
@@ -83,6 +168,8 @@ impl Default for State {
             scroll_y: 0.,
             width: 270.,
             hidden: false,
+            sort: SortOrder::default(),
+            auto_reveal: false,
         }
     }
 }
@@ -144,6 +231,67 @@ pub fn state_directory() -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn sort_orders_keep_folders_first_and_use_cached_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Folder")).unwrap();
+        for (name, seconds) in [("Alpha.md", 300), ("Beta.md", 100), ("Gamma.md", 200)] {
+            let file = std::fs::File::create(dir.path().join(name)).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        }
+        let vault = Vault::open(dir.path()).unwrap();
+        let mut tree = Tree::default();
+        for (order, expected) in [
+            (
+                SortOrder::NameAscending,
+                ["Folder", "Alpha", "Beta", "Gamma"],
+            ),
+            (
+                SortOrder::NameDescending,
+                ["Folder", "Gamma", "Beta", "Alpha"],
+            ),
+            (
+                SortOrder::ModifiedNewest,
+                ["Folder", "Alpha", "Gamma", "Beta"],
+            ),
+            (
+                SortOrder::ModifiedOldest,
+                ["Folder", "Beta", "Gamma", "Alpha"],
+            ),
+        ] {
+            tree.rebuild(&vault, &HashSet::new(), order);
+            assert_eq!(
+                tree.visible.iter().map(Entry::name).collect::<Vec<_>>(),
+                expected
+            );
+        }
+        // File creation times are optional on supported filesystems. The cache
+        // must faithfully expose that metadata, never substitute modified time.
+        for note in vault.notes.iter() {
+            assert_eq!(
+                note.created(),
+                std::fs::metadata(dir.path().join(&note.path))
+                    .unwrap()
+                    .created()
+                    .ok()
+            );
+        }
+        let discovery =
+            Vault::discover(dir.path(), &std::sync::atomic::AtomicBool::new(false)).unwrap();
+        for order in [SortOrder::CreatedNewest, SortOrder::CreatedOldest] {
+            tree.rebuild(&discovery, &HashSet::new(), order);
+            assert_eq!(
+                tree.visible.iter().map(Entry::name).collect::<Vec<_>>(),
+                ["Folder", "Alpha", "Beta", "Gamma"]
+            );
+        }
+        // Older navigation files remain loadable with the new defaults.
+        let old: State = serde_json::from_str("{\"width\":320,\"hidden\":true}").unwrap();
+        assert_eq!(old.sort, SortOrder::NameAscending);
+        assert!(!old.auto_reveal);
+        assert_eq!(old.width, 320.);
+    }
+    #[test]
     fn folders_first_expansion_and_independent_persistence() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Zebra/Empty")).unwrap();
@@ -152,7 +300,7 @@ mod tests {
         let vault = Vault::open(dir.path()).unwrap();
         let mut state = State::default();
         let mut tree = Tree::default();
-        tree.rebuild(&vault, &state.expanded);
+        tree.rebuild(&vault, &state.expanded, state.sort);
         assert_eq!(
             tree.visible.iter().map(Entry::name).collect::<Vec<_>>(),
             ["Zebra", "apple"]
@@ -166,6 +314,8 @@ mod tests {
         state.scroll_y = -120.;
         state.width = 350.;
         state.hidden = true;
+        state.sort = SortOrder::ModifiedNewest;
+        state.auto_reveal = true;
         let store = tempfile::tempdir().unwrap();
         state.save(store.path(), &vault.root).unwrap();
         assert_eq!(State::load(store.path(), &vault.root), state);

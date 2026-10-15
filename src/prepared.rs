@@ -20,6 +20,7 @@ pub enum Kind {
 #[derive(Clone, Debug)]
 pub struct PreviewRow {
     pub kind: Kind,
+    pub source: std::ops::Range<usize>,
     pub text: Arc<str>,
     pub spans: Vec<Span>,
     pub continuation: bool,
@@ -74,7 +75,7 @@ impl Prepared {
         if cancelled.load(Ordering::Relaxed) {
             return None;
         }
-        for block in markdown::blocks(source) {
+        for (block, source_range) in markdown::blocks_with_ranges(source) {
             if cancelled.load(Ordering::Relaxed) {
                 return None;
             }
@@ -143,6 +144,16 @@ impl Prepared {
                     .collect();
                 result.rows.push(PreviewRow {
                     kind,
+                    // Interpolate chunks inside a block; boundaries between blocks
+                    // remain exact despite removed markers and different wrapping.
+                    source: (source_range.start
+                        + source_range.len() * range.start / display.len().max(1))
+                        ..if range.end == display.len() {
+                            source_range.end
+                        } else {
+                            source_range.start
+                                + source_range.len() * range.end / display.len().max(1)
+                        },
                     text: display[range].into(),
                     spans: row_spans,
                     continuation: index != 0,
@@ -158,6 +169,50 @@ impl Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_source_ranges_track_blocks_and_long_chunks() {
+        let source = format!(
+            "\r\n# Héading\r\n\r\nA **bold** paragraph\r\ncontinued.\r\n\r\n> quote\r\n- [x] task\r\n\r\n```rust\r\n{}\r\n```\r\n\r\n---\r\n\r\n# End",
+            "let x = 你好;\r\n".repeat(500)
+        );
+        let prepared = Prepared::new(&source);
+        assert_eq!(
+            prepared.rows[0].source.start,
+            source.find("# Héading").unwrap()
+        );
+        assert_eq!(
+            prepared.rows[1].source.start,
+            source.find("A **bold**").unwrap()
+        );
+        assert_eq!(
+            prepared.rows[2].source.start,
+            source.find("> quote").unwrap()
+        );
+        assert_eq!(prepared.rows[3].source.start, source.find("- [x]").unwrap());
+        let code: Vec<_> = prepared
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, Kind::Code))
+            .collect();
+        assert!(code.len() > 2);
+        assert_eq!(code[0].source.start, source.find("```rust").unwrap());
+        for pair in code.windows(2) {
+            assert_eq!(pair[0].source.end, pair[1].source.start);
+        }
+        assert_eq!(
+            prepared.rows.last().unwrap().source,
+            source.find("# End").unwrap()..source.len()
+        );
+        assert!(
+            prepared
+                .rows
+                .windows(2)
+                .all(|r| r[0].source.end <= r[1].source.start)
+        );
+        let unfinished = Prepared::new("# Before\n\n```\nhello");
+        assert_eq!(unfinished.rows.last().unwrap().source, 10..19);
+    }
+
     #[test]
     fn opening_preview_is_bounded_and_short_notes_are_complete() {
         let short = "# Hello\n\nText with [[Note]] and #tag.";

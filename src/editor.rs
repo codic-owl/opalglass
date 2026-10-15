@@ -28,11 +28,17 @@ struct CachedRow {
     line: WrappedLine,
 }
 
+pub struct ScrollAnchor;
+
+impl EventEmitter<ScrollAnchor> for Editor {}
+
 pub struct Editor {
     #[cfg(test)]
     pub(crate) render_count: usize,
     #[cfg(test)]
     pub(crate) first_paint_at: Option<std::time::Instant>,
+    #[cfg(test)]
+    pub(crate) first_paint_indexed_rows: Option<usize>,
     pub buffer: Buffer,
     pub focus: FocusHandle,
     single_line: bool,
@@ -47,7 +53,11 @@ pub struct Editor {
     preferred_x: Option<Pixels>,
     source_ranges: Vec<Range<usize>>,
     source_version: u64,
+    source_complete: bool,
+    source_requested_revision: u64,
+    _source_prepare: Option<Task<()>>,
     source_list: ListState,
+    pub scroll_anchor: Option<(u64, f64)>,
     source_width: Pixels,
     visible_rows: Vec<SourceRow>,
     cached_rows: Vec<CachedRow>,
@@ -76,6 +86,8 @@ impl Editor {
             render_count: 0,
             #[cfg(test)]
             first_paint_at: None,
+            #[cfg(test)]
+            first_paint_indexed_rows: None,
             buffer,
             focus: cx.focus_handle(),
             single_line,
@@ -90,7 +102,11 @@ impl Editor {
             preferred_x: None,
             source_ranges: Vec::new(),
             source_version: u64::MAX,
+            source_complete: false,
+            source_requested_revision: u64::MAX,
+            _source_prepare: None,
             source_list: ListState::new(0, ListAlignment::Top, px(100.)),
+            scroll_anchor: None,
             source_width: px(0.),
             visible_rows: Vec::new(),
             cached_rows: Vec::new(),
@@ -106,14 +122,43 @@ impl Editor {
         self.buffer = buffer;
         self.preferred_x = None;
         self.source_version = u64::MAX;
+        self.source_complete = false;
+        self.source_requested_revision = u64::MAX;
+        self._source_prepare = None;
         self.cached_rows.clear();
         self.source_links.clear();
         self.missing_links.clear();
         self.source_list.reset(0);
+        self.scroll_anchor = None;
         self.scroll = px(0.);
         self.scroll_x = px(0.);
         self.reveal = true;
         cx.notify();
+    }
+    pub fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        self.source_list.scroll_by(delta);
+        self.reveal = false;
+        cx.notify();
+    }
+    fn publish_scroll_anchor(&mut self, cx: &mut Context<Self>) {
+        let offset = self.source_list.logical_scroll_top();
+        let Some(range) = self.source_ranges.get(offset.item_ix) else {
+            return;
+        };
+        let height = self
+            .cached_rows
+            .iter()
+            .find(|row| row.range == *range)
+            .map_or(px(LINE), |row| row.line.size(px(LINE)).height);
+        let fraction = (f32::from(offset.offset_in_item) / f32::from(height).max(1.)).clamp(0., 1.);
+        let anchor = (
+            self.buffer.revision(),
+            range.start as f64 + range.len() as f64 * fraction as f64,
+        );
+        if self.scroll_anchor != Some(anchor) {
+            self.scroll_anchor = Some(anchor);
+            cx.emit(ScrollAnchor);
+        }
     }
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.reveal = true;
@@ -359,12 +404,28 @@ impl Editor {
                 self.missing_links.clear();
             }
             let offset = self.source_list.logical_scroll_top();
-            self.source_ranges = opalglass::document::source_rows(self.buffer.text());
+            self._source_prepare = None;
+            if self.source_version == u64::MAX {
+                (self.source_ranges, self.source_complete) =
+                    opalglass::document::opening_source_rows(self.buffer.text());
+            } else {
+                self.source_ranges = opalglass::document::source_rows(self.buffer.text());
+                self.source_complete = true;
+            }
             self.source_list
                 .splice(0..self.source_list.item_count(), self.source_ranges.len());
             self.source_list.scroll_to(offset);
             self.source_version = self.buffer.revision();
             self.cached_rows.clear();
+        }
+        // Explicit navigation outside the opening viewport must work even if
+        // the background index has not arrived yet (Ctrl+End, heading jumps).
+        if !self.source_complete
+            && self.buffer.cursor() >= self.source_ranges.last().map_or(0, |r| r.end)
+        {
+            let ranges = opalglass::document::source_rows(self.buffer.text());
+            self.finish_source_index(ranges);
+            self._source_prepare = None;
         }
         if self.reveal {
             let index = self
@@ -386,6 +447,34 @@ impl Editor {
             }
             self.reveal = false;
         }
+    }
+    fn finish_source_index(&mut self, ranges: Vec<Range<usize>>) {
+        let count = self.source_ranges.len();
+        debug_assert_eq!(&ranges[..count], self.source_ranges.as_slice());
+        // Keep measured viewport rows and its scroll offset intact; append only
+        // the newly indexed tail rather than rebuilding the whole list.
+        self.source_list.splice(count..count, ranges.len() - count);
+        self.source_ranges = ranges;
+        self.source_complete = true;
+    }
+    fn start_source_index(&mut self, revision: u64, cx: &mut Context<Self>) {
+        if self.source_complete || self.buffer.revision() != revision {
+            return;
+        }
+        let text = self.buffer.snapshot();
+        self._source_prepare = Some(cx.spawn(async move |this, cx| {
+            let ranges = cx
+                .background_executor()
+                .spawn(async move { opalglass::document::source_rows(&text) })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                if editor.buffer.revision() != revision || editor.source_complete {
+                    return;
+                }
+                editor.finish_source_index(ranges);
+                cx.notify();
+            });
+        }));
     }
     fn source_row(
         &mut self,
@@ -493,6 +582,10 @@ impl Editor {
                     editor
                         .first_paint_at
                         .get_or_insert_with(std::time::Instant::now);
+                    #[cfg(test)]
+                    editor
+                        .first_paint_indexed_rows
+                        .get_or_insert(editor.source_ranges.len());
                     let origin = bounds.origin + point(px(GUTTER), px(0.));
                     let active = editor.buffer.line_start(editor.buffer.cursor())
                         == editor.buffer.line_start(range.start);
@@ -761,11 +854,24 @@ impl Render for Editor {
                         },
                         move |bounds, _, window, cx| {
                             input_entity.update(cx, |editor, cx| {
+                                editor.publish_scroll_anchor(cx);
                                 window.handle_input(
                                     &editor.focus,
                                     ElementInputHandler::new(bounds, cx.entity()),
                                     cx,
                                 );
+                                if !editor.source_complete
+                                    && editor.source_requested_revision != editor.source_version
+                                {
+                                    let revision = editor.source_version;
+                                    editor.source_requested_revision = revision;
+                                    let owner = cx.entity().downgrade();
+                                    window.defer(cx, move |_, cx| {
+                                        let _ = owner.update(cx, |editor, cx| {
+                                            editor.start_source_index(revision, cx);
+                                        });
+                                    });
+                                }
                             });
                         },
                     )

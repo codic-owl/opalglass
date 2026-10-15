@@ -65,9 +65,59 @@ pub fn source_rows(text: &str) -> Vec<std::ops::Range<usize>> {
     result
 }
 
+/// Index enough source rows for the opening viewport without scanning the tail.
+/// The result is an exact prefix of `source_rows`, including for a long single
+/// physical line. The boolean says whether the entire document was indexed.
+pub fn opening_source_rows(text: &str) -> (Vec<std::ops::Range<usize>>, bool) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for (index, grapheme) in text.grapheme_indices(true) {
+        if grapheme != "\n" && index - start >= 256 {
+            rows.push(start..index);
+            start = index;
+            if rows.len() == 128 {
+                return (rows, false);
+            }
+        }
+        if let Some(newline) = grapheme.find('\n') {
+            rows.push(start..index + newline);
+            start = index + newline + 1;
+            if rows.len() == 128 {
+                return (rows, false);
+            }
+        }
+    }
+    rows.push(start..text.len());
+    (rows, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opening_rows_are_an_exact_bounded_prefix_even_for_long_unicode_lines() {
+        for text in [
+            String::new(),
+            "short\n\nend\n".into(),
+            "row\n".repeat(200_000),
+            "👩‍💻e\u{301}x".repeat(20_000),
+            "a".repeat(65_536),
+            ("x".repeat(256) + "\r\n").repeat(200),
+        ] {
+            let full = source_rows(&text);
+            let (opening, complete) = opening_source_rows(&text);
+            assert_eq!(opening, full[..opening.len()]);
+            assert!(opening.len() <= 129);
+            if complete {
+                assert_eq!(opening, full);
+            }
+            if full.len() > 129 {
+                assert!(!complete);
+                assert_eq!(opening.len(), 128);
+            }
+        }
+    }
     #[test]
     fn display_chunks_preserve_graphemes_empty_lines_and_offsets() {
         let text = format!("{}\n\nend\n", "👩‍💻e\u{301}".repeat(1000));

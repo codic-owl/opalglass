@@ -156,22 +156,40 @@ pub fn inline(source: &str) -> (String, Vec<Span>) {
 }
 
 pub fn blocks(source: &str) -> Vec<Block> {
+    blocks_with_ranges(source)
+        .into_iter()
+        .map(|(block, _)| block)
+        .collect()
+}
+
+/// Blocks paired with their original byte ranges, including Markdown markers.
+/// Retaining these during parsing lets the UI synchronize virtualized panes.
+pub fn blocks_with_ranges(source: &str) -> Vec<(Block, Range<usize>)> {
     let mut result = Vec::new();
     let mut paragraph = String::new();
     let mut code = String::new();
     let mut fence: Option<(char, usize)> = None;
-    fn flush(result: &mut Vec<Block>, text: &mut String) {
+    let mut paragraph_range = 0..0;
+    let mut fence_start = 0;
+    let mut offset = 0;
+    fn flush(result: &mut Vec<(Block, Range<usize>)>, text: &mut String, range: &Range<usize>) {
         if !text.is_empty() {
-            result.push(Block::Paragraph(std::mem::take(text)));
+            result.push((Block::Paragraph(std::mem::take(text)), range.clone()));
         }
     }
-    for line in source.lines() {
+    for raw in source.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len();
+        let line = raw
+            .strip_suffix("\r\n")
+            .or_else(|| raw.strip_suffix('\n'))
+            .unwrap_or(raw);
         let trimmed = line.trim();
         let marker = trimmed.chars().next().unwrap_or(' ');
         let count = trimmed.chars().take_while(|c| *c == marker).count();
         if let Some((c, n)) = fence {
             if marker == c && count >= n && trimmed[count..].trim().is_empty() {
-                result.push(Block::Code(std::mem::take(&mut code)));
+                result.push((Block::Code(std::mem::take(&mut code)), fence_start..offset));
                 fence = None;
             } else {
                 code.push_str(line);
@@ -180,12 +198,13 @@ pub fn blocks(source: &str) -> Vec<Block> {
             continue;
         }
         if (marker == '`' || marker == '~') && count >= 3 {
-            flush(&mut result, &mut paragraph);
+            flush(&mut result, &mut paragraph, &paragraph_range);
+            fence_start = start;
             fence = Some((marker, count));
             continue;
         }
         let special = if trimmed.is_empty() {
-            flush(&mut result, &mut paragraph);
+            flush(&mut result, &mut paragraph, &paragraph_range);
             continue;
         } else if marker == '#' && count <= 6 && trimmed.as_bytes().get(count) == Some(&b' ') {
             Some(Block::Heading(
@@ -211,18 +230,21 @@ pub fn blocks(source: &str) -> Vec<Block> {
                 .map(|text| Block::Item(text.into()))
         };
         if let Some(block) = special {
-            flush(&mut result, &mut paragraph);
-            result.push(block);
+            flush(&mut result, &mut paragraph, &paragraph_range);
+            result.push((block, start..offset));
         } else {
             if !paragraph.is_empty() {
                 paragraph.push(' ');
+            } else {
+                paragraph_range.start = start;
             }
+            paragraph_range.end = offset;
             paragraph.push_str(trimmed);
         }
     }
-    flush(&mut result, &mut paragraph);
+    flush(&mut result, &mut paragraph, &paragraph_range);
     if fence.is_some() {
-        result.push(Block::Code(code));
+        result.push((Block::Code(code), fence_start..source.len()));
     }
     result
 }

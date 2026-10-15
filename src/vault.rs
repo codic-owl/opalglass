@@ -25,6 +25,7 @@ pub struct Note {
 struct Stamp {
     len: u64,
     modified: Option<SystemTime>,
+    created: Option<SystemTime>,
     #[cfg(unix)]
     changed: (i64, i64),
 }
@@ -34,6 +35,7 @@ impl Stamp {
         Self {
             len: meta.len(),
             modified: meta.modified().ok(),
+            created: meta.created().ok(),
             #[cfg(unix)]
             changed: {
                 use std::os::unix::fs::MetadataExt;
@@ -44,6 +46,12 @@ impl Stamp {
 }
 
 impl Note {
+    pub fn modified(&self) -> Option<SystemTime> {
+        self.stamp.as_ref().and_then(|stamp| stamp.modified)
+    }
+    pub fn created(&self) -> Option<SystemTime> {
+        self.stamp.as_ref().and_then(|stamp| stamp.created)
+    }
     fn new(path: PathBuf, text: String, stamp: Option<Stamp>) -> Self {
         Self {
             title: path

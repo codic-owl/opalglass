@@ -19,10 +19,14 @@ cargo run --locked -- /path/to/your/vault
 Or run `cargo run --locked` and choose **Open vault** (or press **Ctrl O**) to
 browse for your vault folder. If the system folder picker is unavailable, a path
 entry dialog appears instead. The selected directory must already exist.
-The development profile optimizes the app, GPUI, and the native font shaping,
-rasterization, and layout dependencies. Optimizing GPUI alone leaves native text
-rendering slow. The first build after a profile change recompiles those crates;
-subsequent builds reuse them.
+The development profile optimizes the app and all runtime dependencies at
+`opt-level = 2`. The first build after a profile change recompiles affected crates;
+subsequent builds reuse them. Initial builds take longer, but native rendering
+and tab interactions benefit. Development assertions and overflow checks remain
+enabled. Release builds retain ThinLTO and one code generation unit.
+Both profiles use Rust's default CPU baseline for the selected target, without
+`target-cpu=native` or host-specific instruction flags. Each supported operating
+system and architecture still needs its own build.
 
 Try the sample vault without changing the included examples:
 
@@ -67,7 +71,10 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
 - Draggable tabs with individual close buttons, middle-click closing, and keyboard switching.
 - Original text editing with soft wrapping, mouse selection, clipboard,
   grapheme-aware deletion, undo/redo, and GPUI input-method integration.
-- Source, split, and reading views with a native Markdown preview.
+- Source, split, and reading views with a native Markdown preview, icon controls
+  with hover labels, and a draggable divider in split view. The reading pane’s
+  lock button links scrolling to the editor using Markdown source positions;
+  unlock it to scroll the two panes independently.
 - Source line numbers, active-line highlighting, word navigation/deletion, and
   page navigation with selection. Vertical movement remembers the text column.
 - A centered reading column with clearer heading, quote, and link styling;
@@ -87,7 +94,8 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
 - Background note loading, reloading, and Markdown analysis. A new note shows
   its full editable source and a bounded opening preview before full analysis.
   Source and preview render only visible rows; long lines and blocks use bounded
-  display chunks.
+  display chunks. Initial source indexing covers 128 display rows; the remaining
+  row index is built in the background after paint.
 - Cached preview, tags, word count, and dirty status; delta-based undo history
   and indexed Unicode cursor/IME positions.
 - Atomic file replacement with external-change checks and a save-copy flow.
@@ -160,9 +168,30 @@ outside the vault; source notes are not changed. Backend tests use
 ## Sidebar
 
 Folders start collapsed. Click a folder to expand or collapse it. The active note
-is highlighted; following links leaves the tree alone. **Reveal active note**
-(**Ctrl Shift B**) expands its parents and scrolls it into view. Drag the sidebar's
-right edge to resize it, or use **Ctrl B** / the **☰** button to hide or show it.
+is highlighted; following links leaves the tree alone. Clicking a note tab
+expands its parents and scrolls it into view, showing the sidebar and clearing
+search when needed. **Ctrl Shift B** also reveals the active note. Drag the sidebar's
+right edge to resize it, or use **Ctrl B** / the panel icon in the thin left rail
+to collapse or expand it. The rail stays accessible while the sidebar is hidden;
+there is no separate top toolbar.
+
+The file explorer has five icon buttons with hover labels:
+
+- **New note** and **New folder** create at the vault root, with inline naming.
+  The context menu and keyboard shortcuts can still create inside a selected folder.
+- **Change sort order** offers name, modified time, and created time in either
+  direction. Folders stay first. The menu supports Up/Down, Enter, and Escape.
+- **Auto-reveal current file** toggles following the active note, including links
+  and keyboard tab switches. It keeps document focus, search text, and the
+  sidebar's collapsed state. It starts disabled; clicking a tab still reveals
+  that note explicitly.
+- **Collapse all** closes the folders; when all are closed, it becomes **Expand all**.
+
+Sort order and auto-reveal are saved separately for each vault. Date sorting uses
+cached filesystem metadata collected by background scanning. Files with unavailable
+timestamps sort last, with names breaking ties; filesystems without creation times
+use name order for that group. No filesystem reads occur while sorting on the UI
+thread. Toolbar actions are disabled until a vault is open.
 
 Search displays a ranked list with full relative paths and highlighted excerpts. Clearing the search restores
 the tree and its scroll position. Both lists are virtualized; expansion traverses
@@ -173,13 +202,12 @@ These are diagnostic CPU timings, not native GPU frame measurements.
 
 Right-click a folder for **New note**, **New folder**, **Rename…**, or
 **Move folder to…**. Right-click a note for **Rename…** or **Move file to…**.
-Right-click empty explorer space or the vault name to create at the vault root.
+Right-click empty explorer space to create at the vault root.
 Names are edited directly in the tree: Enter confirms, Escape cancels. Creation
-shortcuts use the selected folder, or the selected note's parent. Clicking the
-vault name sets the destination to the root without a separate action button.
+shortcuts use the selected folder, or the selected note's parent.
 
-Drag a note or folder onto another folder to move it, or onto the vault name to
-move it to the root. Valid destinations highlight during dragging. A folder
+Drag a note or folder onto another folder to move it. Valid destinations
+highlight during dragging. A folder
 cannot be dropped into itself or its descendants. The **Move to…** menu action
 opens a searchable list of existing destination folders; `/` denotes the vault
 root. Use Up/Down and Enter, or click a destination. Moving preserves the item's
@@ -190,9 +218,9 @@ Left collapses or selects its parent, Home/End jump, and Enter opens a note or
 toggles a folder. Type a name to jump to a visible match; the prefix resets after
 800 ms. **F2** renames the selection in the tree, or the active note when editing.
 **Shift F10** opens the selected entry's menu; Up/Down and Enter choose an action.
-Reveal active note also focuses the tree.
+**Ctrl Shift B** focuses the tree; clicking a tab keeps focus in the document.
 
-Tabs activate on mouse press. Drag tabs to reorder them; the highlighted edge
+Tabs activate on mouse press and reveal the note in the tree on click. Drag tabs to reorder them; the highlighted edge
 shows the insertion position, and the dragged note remains active.
 Each tab has a close button, and middle-click also closes a tab. Closing saves
 that tab first; a save conflict leaves it open and focuses it. Closing a
@@ -315,7 +343,7 @@ Before calling this ready for daily use, run the UI harness and then manually:
 6. Save a copy, reload the original, then close the app.
 7. Check a real IME composition and clipboard exchange in a Linux desktop session.
 8. Right-click files, folders, and empty explorer space. Create and rename inline,
-   drag files/folders to folders and the vault name, reorder tabs, and close a
+   drag files/folders to folders, move to `/` through the folder chooser, reorder tabs, and close a
    dirty background tab. Check cancellation and conflicts.
 9. Check source line numbers, wrapped-line movement, and Page Up/Down at narrow
    and wide sizes. In reading mode, check the centered column and copy a long code block.
@@ -349,7 +377,14 @@ until the query or vault changes. Notes use a contiguous text buffer, so inserti
 the start of a large document still moves its suffix. Display row metadata is
 rebuilt after edits, but text shaping and preview layout are limited to visible
 content. Opening parses at most the first 8 KiB for its first preview and starts
-full analysis after the first paint. Code copying waits for a complete preview
+full analysis after the first paint. It also indexes only the first 128 source
+display rows initially, including for very long physical lines. The remaining
+source index is built in the background and appended without replacing measured
+viewport rows or changing the cursor and scroll position. Immediate jumps beyond
+the opening rows complete the index synchronously; edits discard stale results.
+The full file is still read and the editable text buffer initialized before
+opening, so disk I/O and buffer initialization still scale with file size.
+Code copying waits for a complete preview
 so it cannot silently copy a truncated block. Heading navigation beyond the
 opening excerpt completes when analysis is ready, and scroll position is retained.
 Analysis after edits is debounced by 75 ms; the preview and word count may briefly
@@ -490,6 +525,31 @@ but still stop before GPU presentation; they supersede simulated latency claims.
 The final build also optimizes Swash glyph rasterization. A follow-up with the
 302 KB varied-text fixture measured a 34 ms open and 13 ms tab switches; short
 notes opened in 8–14 ms. The native window was 950 × 1140 logical pixels.
+
+After moving the remaining source-row indexing behind the first paint, a 6.04 MB
+varied-text note with 2,000 backlinks opened in 31.5 ms instead of 155 ms on the
+same native window size. First-frame rendering fell from 130.7 ms to 18.0 ms;
+reading and initial buffer/preview preparation still took about 7 ms. The full
+source row index finishes asynchronously after the note is already visible.
+
+A subsequent portable-build comparison used the same 6.04 MB fixture and 2,000
+backlinks at 950 × 1020 logical pixels on the same native Wayland desktop. These
+are medians from two complete runs per variant, with a warm filesystem cache;
+incomplete runs and runs at a different viewport were excluded:
+
+| Build | Open 6 MB note | Opening render phase | Switch to 6 MB note |
+| --- | ---: | ---: | ---: |
+| Selected development dependencies optimized | 28.9 ms | 17.3 ms | 16.6 ms |
+| All runtime dependencies optimized (new development default) | 22.2 ms | 9.9 ms | 13.1 ms |
+| Release, ThinLTO, one code generation unit | 21.7 ms | 5.8 ms | 10.8 ms |
+
+Each run includes one large-note opening and two switches to that note. Total
+latency includes variable compositor frame scheduling; the render phase measures
+CPU work and excludes GPU presentation. These small Linux samples support the
+development profile change, but do not establish results on other platforms.
+No CPU-specific flags were used in any variant. Cargo's
+[profile documentation](https://doc.rust-lang.org/cargo/reference/profiles.html)
+describes these optimization settings and their build-time tradeoffs.
 
 ## Layout and licensing
 
