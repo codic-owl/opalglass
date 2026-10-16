@@ -1,0 +1,183 @@
+{
+  "scope": "Local v1 implementation and verification audit; not a release-readiness or full Obsidian parity claim.",
+  "checked": "2026-10-17",
+  "requirements": [
+    {
+      "requirement": "Reading layout and margins",
+      "status": "verified locally",
+      "implementation": [
+        "Per-row 24 px gutters, centered 760 px maximum column, consistent typography and surface in Reading and Split"
+      ],
+      "evidence": [
+        "workspace::tests::reading_gutters_survive_narrow_split_panes_and_scrolling",
+        "workspace::tests::reading_column_and_complete_code_clipboard"
+      ],
+      "limits": [
+        "Native screenshots cover representative fixtures, not every theme or DPI."
+      ]
+    },
+    {
+      "requirement": "Preserve references during moves",
+      "status": "verified locally",
+      "implementation": [
+        "Source-preserving wiki, Markdown, reference-definition and attachment destinations",
+        "Folder and attachment explorer rename/move actions",
+        "No-overwrite moves, collision preflight and rollback"
+      ],
+      "evidence": [
+        "vault::tests::moves_preserve_markdown_references_images_and_wiki_embeds_without_reformatting",
+        "vault::tests::move_folder_preserves_incoming_outgoing_aliases_headings_and_line_endings",
+        "vault::tests::failed_link_write_rolls_back_previous_edits_and_preserves_external_change"
+      ],
+      "limits": [
+        "Backlinks remain wiki based. Ambiguous bare names require an explicit path."
+      ]
+    },
+    {
+      "requirement": "Markdown rendering and Obsidian coverage",
+      "status": "partial; full parity not achieved",
+      "implementation": [
+        "Shared CommonMark inline parsing and source mapping",
+        "Whole-document lists, nested quotes, aligned tables, references, code and standard task controls",
+        "Colored highlights",
+        "Native nested and foldable Reading callouts",
+        "Custom Unicode task markers with undoable Reading and keyboard toggles",
+        "Named and inline Reading footnotes with document numbering, formatted footer definitions, and forward/return navigation",
+        "Background syntax coloring in Reading, Source and Live Preview, with staged full layout and a bounded decoration cache"
+      ],
+      "evidence": [
+        "tests/fixtures/obsidian-coverage.json",
+        "scripts/capture_obsidian_reference.mjs",
+        "examples/markdown_audit.rs",
+        "examples/markdown_vault_audit.rs",
+        "inline::tests",
+        "callouts::tests",
+        "rendering::tests",
+        "prepared::tests",
+        "footnotes::tests",
+        "workspace::tests::reading_footnotes_reorder_navigate_and_return_without_opening_notes",
+        "workspace::tests::custom_reading_tasks_preserve_unicode_markers_on_undo",
+        "syntax::tests",
+        "examples/syntax_benchmark.rs",
+        "workspace::tests::syntax_colors_arrive_after_first_paint_and_refresh_after_edits"
+      ],
+      "limits": [
+        "See all missing/partial families in the coverage inventory. In particular superscript/Live Preview footnotes, exhaustive syntax-language coverage, math, Mermaid, HTML, transclusion and media are incomplete or absent.",
+        "Live Preview block widgets are not equivalent to Reading.",
+        "Supported means implemented, not exhaustively parity verified."
+      ]
+    },
+    {
+      "requirement": "Saved note history",
+      "status": "verified locally with limitation",
+      "implementation": [
+        "Durable snapshots of prior saved contents",
+        "Version comparison and undoable restore command",
+        "Per-note retention, hash validation and symlink rejection"
+      ],
+      "evidence": [
+        "history::tests",
+        "workspace::tests"
+      ],
+      "limits": [
+        "History keys follow paths; older versions remain under the previous path after rename."
+      ]
+    },
+    {
+      "requirement": "Recoverable bulk edits",
+      "status": "verified locally",
+      "implementation": [
+        "Durable before-text/after-hash journal before writes",
+        "Restart-safe undo with whole-batch conflict preflight",
+        "Refuses to overwrite external changes"
+      ],
+      "evidence": [
+        "changes::tests",
+        "history::tests",
+        "workspace::tests::workspace_replace_requires_current_preview_checks_all_files_and_respects_selection"
+      ],
+      "limits": [
+        "Batch journals are not automatically pruned."
+      ]
+    },
+    {
+      "requirement": "Cross-platform builds and packaging",
+      "status": "Linux verified; native Windows/macOS pending",
+      "implementation": [
+        "Portable release profile",
+        "Linux/Windows/macOS package script and CI matrix",
+        "Platform-specific no-overwrite rename"
+      ],
+      "evidence": [
+        ".github/workflows/check.yml",
+        "scripts/package.py",
+        "src/platform.rs"
+      ],
+      "limits": [
+        "No configured Git remote or native Windows/macOS runner is available here.",
+        "Windows rename module cross-check passed; full GNU cross-build stops at missing MinGW C compiler.",
+        "Packages are unsigned; native install, signing/notarization and broad Linux distribution checks remain."
+      ]
+    },
+    {
+      "requirement": "Editor input and Unicode reliability",
+      "status": "simulated checks pass; real composition pending",
+      "evidence": [
+        "ui-tests/src/lib.rs",
+        "buffer::tests",
+        "live::tests",
+        "document::tests"
+      ],
+      "limits": [
+        "IME tests exercise the UTF-16/composition bridge, not a real composing engine. Local Fcitx is configured only with a keyboard layout."
+      ]
+    },
+    {
+      "requirement": "Clipboard, external changes and crash recovery",
+      "status": "verified locally",
+      "evidence": [
+        "ui-tests/src/lib.rs",
+        "state::tests",
+        "vault::tests",
+        "Native isolated-vault clipboard/drop, external-conflict, clean-refresh and restart checks"
+      ],
+      "limits": [
+        "Native checks are Linux only."
+      ]
+    },
+    {
+      "requirement": "Accessibility",
+      "status": "audit identified release gap",
+      "evidence": [
+        "Editor and workspace keyboard interaction tests",
+        "Source inspection of native editor and UI controls"
+      ],
+      "limits": [
+        "Screen-reader semantics are not explicitly exposed or verified. Keyboard coverage does not establish accessibility conformance."
+      ]
+    }
+  ],
+  "latest_checks": {
+    "core_tests": 92,
+    "search_tests": 16,
+    "ui_tests": 80,
+    "ignored_ui_profiling_tests": 3,
+    "clippy": "pass",
+    "real_vault_audit": {
+      "notes": 4425,
+      "source_bytes": 370107531,
+      "prepared_rows": 1268134,
+      "references": 13386,
+      "evidence": "target/markdown-audit/real-vault-syntax-final.json",
+      "checks": "Source bounds and UTF-8, nonoverlapping source rows, display spans, folded/footer projection round trips, and footnote return positions, syntax-color source spans"
+    },
+    "real_vault_modifications": false,
+    "release_build": "pass",
+    "linux_package": "Archive checksum, executable hash, bundled Oniguruma notice, icon, and extracted --help verified",
+    "native_callout": "Actual release X11 pointer expand verified; target/workflow-audit/release-runs/run-3495pi3f/reading-callouts-expanded.png",
+    "native_footnotes": "Actual release X11 pointer jump and second-reference return verified; target/workflow-audit/release-runs/run-3iiold_o/footnotes-return.png",
+    "syntax_benchmark": "target/markdown-audit/syntax-benchmark.jsonl",
+    "native_syntax": "Release Reading, Split/Live Preview and Source screenshots inspected; target/workflow-audit/release-runs/run-8r9w326z/"
+  },
+  "goal_complete": false
+}

@@ -1,0 +1,832 @@
+{
+  "scope": "Built-in Obsidian desktop Markdown rendering and related rendered interactions; community plugins and custom themes are separate integrations. Coverage does not imply identical theme pixels.",
+  "reference_version": "1.14.4",
+  "sources": [
+    "https://help.obsidian.md/syntax",
+    "https://help.obsidian.md/advanced-syntax",
+    "https://help.obsidian.md/obsidian-flavored-markdown",
+    "https://help.obsidian.md/embeds",
+    "https://help.obsidian.md/callouts"
+  ],
+  "source_checked": "2026-10-17",
+  "parity_verified": false,
+  "cases": [
+    {
+      "id": "paragraphs_soft_hard_breaks",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/paragraphs_soft_hard_breaks/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/paragraphs_soft_hard_breaks/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "A soft\nbreak.\n\nA hard  \nbreak.\n\nMultiple   spaces.",
+      "parity_verified": false,
+      "notes": "Soft/hard line breaks are preserved; whitespace collapsing is not pixel-identical to HTML."
+    },
+    {
+      "id": "headings_atx_setext",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/headings_atx_setext/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/headings_atx_setext/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "# One\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n\nSetext\n======\n\nSubheading\n----------",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "emphasis_delimiters",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/emphasis_delimiters/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/emphasis_delimiters/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "**bold** __bold__ *italic* _italic_ ***both*** **bold _nested_** snake_case_name",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "strikethrough",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/strikethrough/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/strikethrough/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "A ~~removed phrase~~ remains visible.",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "highlight_and_colors",
+      "family": "basic",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "inline::tests::highlights_preserve_nested_styles_colors_code_and_edit_positions",
+        "editor::tests::colored_highlight_clicks_preserve_delimiters_and_unicode"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792189664855/highlight_and_colors/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792189664855/highlight_and_colors/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts.png"
+      },
+      "markdown": "==marked== ==🔴red== ==🟠orange== ==🟡yellow== ==🟢green== ==🔵blue== ==🟣purple==\n\n==outer **bold** and `code`== [==link==](Target.md)\n\n\\==escaped== ==unclosed\n\n== spaced == ===triple=== ==== ==🔴==\n\n==across\nlines==\n\n[[Target|==alias==]] ==#work==\n\n==\n\nseparate==\n\n==🔴==",
+      "parity_verified": false,
+      "notes": "Reading and Live Preview support highlights, six color emoji prefixes, nested inline styles, source-preserving editing, escaped markers and paragraph boundaries. Wiki aliases remain literal, matching the captured reference. Unusual consecutive equals-marker runs still differ; exact delimiter parity is not claimed."
+    },
+    {
+      "id": "escapes_entities",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/escapes_entities/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/escapes_entities/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "\\*literal\\* &amp; &lt; &#233; &nbsp; \\#ordinary",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "inline_code",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/inline_code/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/inline_code/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "`code` and ``a ` inside`` and ` **literal** `",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "fenced_indented_code",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/fenced_indented_code/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/fenced_indented_code/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "```rust\nlet x = 1;\n```\n\n~~~text\nliteral\n~~~\n\n    indented\n    code",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "code_syntax_highlighting",
+      "family": "basic",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "syntax::tests",
+        "prepared::tests::code_colors_keep_exact_source_ranges_inside_containers_and_hidden_metadata",
+        "prepared::tests::code_chunks_keep_multiline_color_and_complete_copy_text",
+        "workspace::tests::syntax_colors_arrive_after_first_paint_and_refresh_after_edits",
+        "workspace::tests::reading_column_and_complete_code_clipboard"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/code_syntax_highlighting/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/code_syntax_highlighting/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-8r9w326z/syntax-reading.png",
+        "native_editing_screenshots": [
+          "target/workflow-audit/release-runs/run-8r9w326z/syntax-split.png",
+          "target/workflow-audit/release-runs/run-8r9w326z/syntax-source-settled.png"
+        ]
+      },
+      "markdown": "```javascript\nconst answer = 42; // comment\nconsole.log(\"hello\");\n```",
+      "parity_verified": false,
+      "notes": "Fenced code uses bundled Syntect grammars in Reading, Source and Live Preview. Background decoration follows the opening frame and full structural preparation; a bounded content-hash cache reuses unchanged code. Unicode source positions, multiline lexical state, aliases, selection/find composition and complete copy text are preserved. This is not Prism language/grammar parity; unknown languages remain plain. Coloring stops at a line over 8 KiB or 65,536 accumulated spans in a block and has a 1 MiB source budget per document analysis; remaining text remains visible/copyable."
+    },
+    {
+      "id": "horizontal_rules",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/horizontal_rules/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/horizontal_rules/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "Before\n\n---\n\n***\n\n_ _ _\n\nAfter",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "nested_blockquotes",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/nested_blockquotes/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/nested_blockquotes/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "> Outer paragraph\n>\n> > Inner **quote**\n>\n> Another paragraph",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "ordered_unordered_nested_lists",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/ordered_unordered_nested_lists/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/ordered_unordered_nested_lists/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "3. Third\n4. Fourth\n   - Nested bullet\n     1. Nested number\n\n- Parent\n  - Child\n\n  Second paragraph in parent.",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "task_lists_and_toggle",
+      "family": "basic",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests",
+        "editing::tests::custom_task_toggle_and_continue_are_undoable",
+        "workspace::tests::custom_reading_tasks_preserve_unicode_markers_on_undo"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792190675064/task_lists_and_toggle/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792190675064/task_lists_and_toggle/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "- [ ] Pending\n- [x] Complete\n- [?] Question\n  - [ ] Nested task\n\n* [/] Alternate\n+ [-] Cancelled\n1. [é] Unicode\n2. [ ]\n\n- [?]no-space\n- [word] Not a task\n\n`- [?] literal`",
+      "parity_verified": false,
+      "notes": "Standard and custom single-character task markers render across unordered and ordered lists. Non-space markers are checked, matching the captured Obsidian fixture. Reading and keyboard toggles preserve Unicode and are undoable; bare markers without trailing whitespace remain literal. Exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "inline_reference_autolinks",
+      "family": "basic",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792194249064/inline_reference_autolinks/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792194249064/inline_reference_autolinks/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "[named](https://example.com \"Title\") [reference][r] <https://example.com> <test@example.com>\n\n[r]: https://example.org \"Reference title\"\n\nBare https://example.com/path?x=1&y=2. (https://en.wikipedia.org/wiki/Foo_(bar)).\n\nwww.example.com example.com test@example.com root@localhost\n\nHTTP://example.com ftp://example.com mailto:test@example.com\n\nUnicode https://例え.テスト/道 and https://example.com/é.\n\n**https://example.com/bold** *https://example.com/italic*\n\n`https://example.com/code` [https://example.com/label](Target.md) [[Target|https://example.com/wiki]]\n\nhttps://example.com/?q=one&amp;x=two and https://example.com/a_b_c and https://example.com/a*b*c\n\nhttps\\://example.com/escaped and \\https://example.com/slash\n\n<span data-url=\"https://example.com/attribute\">HTML</span>\n\n```\nhttps://example.com/fenced\n```",
+      "parity_verified": false,
+      "notes": "Inline links, reference definitions and angle autolinks parse; bare URL linkification and reference definitions in Live Preview remain gaps. Incoming backlinks remain wiki-link based."
+    },
+    {
+      "id": "inline_and_block_comments",
+      "family": "basic",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/inline_and_block_comments/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/inline_and_block_comments/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "Visible %%hidden%% text.\n\n%%\n# Hidden heading\n\nHidden paragraph\n%%\n\n<!-- HTML comment -->\nAfter `%%literal%%`.",
+      "parity_verified": false,
+      "notes": "Reading removes comments before block parsing and restores original source offsets. Single-line Live Preview comments and literal code delimiters are tested; full multi-line Live Preview parity is not established."
+    },
+    {
+      "id": "footnotes_and_inline_footnotes",
+      "family": "basic",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "footnotes::tests",
+        "workspace::tests::reading_footnotes_reorder_navigate_and_return_without_opening_notes"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792191130294/footnotes_and_inline_footnotes/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792191130294/footnotes_and_inline_footnotes/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-3iiold_o/footnotes-initial.png",
+        "native_navigation_screenshots": [
+          "target/workflow-audit/release-runs/run-3iiold_o/footnotes-jump-settled.png",
+          "target/workflow-audit/release-runs/run-3iiold_o/footnotes-return.png"
+        ]
+      },
+      "markdown": "A reference[^n] and another[^n]. Inline ^[An inline footnote].\n\n[^n]: A **footnote** with detail.\n\nFormatted ^[**bold** and `code` and [link](Target.md)].\n\nEscaped \\^[literal] and `^[code]`.\n\nNested ^[outer [brackets] end].\n\nMultiline ^[first\nsecond].\n\nEmpty ^[].",
+      "parity_verified": false,
+      "notes": "Reading numbers named and inline footnotes in reference order, moves formatted definitions to the footer, hides unused definitions, and provides forward/return navigation. Repeated references, code, links, nested brackets, empty notes, and folded callouts have regression coverage. Live Preview footnote rendering and superscript reference typography remain incomplete; exhaustive syntax parity is not established."
+    },
+    {
+      "id": "tables_alignment_escaping",
+      "family": "extended",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/tables_alignment_escaping/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/tables_alignment_escaping/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "| Left | Center | Right |\n| :-- | :--: | --: |\n| **bold** | `code` | 123 |\n| a\\|b | [[Target\\|alias]] | 456 |",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "foldable_nested_callouts",
+      "family": "extended",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "callouts::tests",
+        "workspace::tests::reading_callouts_fold_nested_rows_and_reveal_find_targets"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/foldable_nested_callouts/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/foldable_nested_callouts/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts.png",
+        "native_expanded_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts-expanded.png"
+      },
+      "markdown": "> [!tip] Custom **title**\n> Body text\n>\n> > [!warning]- Nested\n> > Hidden detail\n\n> [!note]+ Open by default\n> Detail",
+      "parity_verified": false,
+      "notes": "Reading renders typed callouts, formatted/default titles, nesting and +/- fold states. Collapsing removes body rows from the virtual list; find and outline navigation reveal hidden targets. Source edits invalidate fold overrides. Live Preview callout widgets and exact Obsidian icon/theme parity are not implemented."
+    },
+    {
+      "id": "inline_block_math",
+      "family": "extended",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/inline_block_math/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/inline_block_math/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "Inline $x^2 + y^2 = z^2$.\n\n$$\n\\frac{a}{b} = \\sqrt{c}\n$$",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "mermaid_diagrams",
+      "family": "extended",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/mermaid_diagrams/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/mermaid_diagrams/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "```mermaid\nflowchart LR\n  A[Start] --> B{Choice}\n  B --> C[Done]\n```",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "html_elements",
+      "family": "extended",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/html_elements/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/html_elements/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "<div>HTML **literal Markdown** <b>bold</b><br>next line</div>\n\n<details><summary>Details</summary>Contents</details>\n\nA <kbd>Ctrl</kbd> key and <mark>mark</mark>.",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "wiki_links_aliases",
+      "family": "links_embeds",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/wiki_links_aliases/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/wiki_links_aliases/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "[[Target]] [[Target|An alias]] [[Missing|Unresolved]]",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "heading_and_block_references",
+      "family": "links_embeds",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/heading_and_block_references/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/heading_and_block_references/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "[[Target#Section]] [[Target#^sample]]\n\nA block in this note. ^here",
+      "parity_verified": false,
+      "notes": "ATX heading navigation works; block references and full heading normalization need work."
+    },
+    {
+      "id": "note_heading_block_transclusion",
+      "family": "links_embeds",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/note_heading_block_transclusion/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/note_heading_block_transclusion/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "![[Target]]\n\n![[Target#Section]]\n\n![[Target#^sample]]",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "local_remote_images_dimensions",
+      "family": "links_embeds",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/local_remote_images_dimensions/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/local_remote_images_dimensions/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "![[Pixel.svg|120]]\n\n![Alt|100x60](Pixel.svg)\n\n![Remote|100](REMOTE_IMAGE_URI)",
+      "parity_verified": false,
+      "notes": "Local images, including images embedded in paragraphs, render as native image blocks; exact inline flow, requested dimensions and remote loading are not implemented."
+    },
+    {
+      "id": "audio_video_embeds",
+      "family": "links_embeds",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/audio_video_embeds/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/audio_video_embeds/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "![[Sample.wav]]\n\n![[Sample.mp4]]",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "pdf_embeds_page_height",
+      "family": "links_embeds",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188652040/pdf_embeds_page_height/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188652040/pdf_embeds_page_height/reading.png",
+        "limitations": []
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "![[Sample.pdf#page=1&height=240]]",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "canvas_embeds",
+      "family": "links_embeds",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/canvas_embeds/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/canvas_embeds/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "![[Sample.canvas]]",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "embedded_search_results",
+      "family": "links_embeds",
+      "status": "missing",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/embedded_search_results/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/embedded_search_results/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "```query\npath:Target\n```",
+      "parity_verified": false,
+      "notes": "The current native renderer does not implement this feature family."
+    },
+    {
+      "id": "frontmatter_properties",
+      "family": "metadata",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/frontmatter_properties/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/frontmatter_properties/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "---\ntitle: Fixture\ntags: [work, research/maps]\n---\n# Body\nMetadata stays separate.",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "inline_nested_tags",
+      "family": "metadata",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/inline_nested_tags/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/inline_nested_tags/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "A #work tag, #research/maps and `#not-a-tag`.",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "reading_gutters_and_width",
+      "family": "layout",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/reading_gutters_and_width/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/reading_gutters_and_width/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "# A readable heading\n\nThis paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. This paragraph should have comfortable margins and a readable line length. ",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "split_pane_gutters",
+      "family": "layout",
+      "status": "supported",
+      "fixture": "inline markdown in this record",
+      "tests": [
+        "rendering::tests",
+        "prepared::tests",
+        "markdown::tests",
+        "live::tests"
+      ],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/split_pane_gutters/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/split_pane_gutters/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
+      },
+      "markdown": "# Narrow pane\n\nText should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. Text should wrap inside gutters in a narrow split pane. ",
+      "parity_verified": false,
+      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+    },
+    {
+      "id": "source_mapping_and_scroll_sync",
+      "family": "layout",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/source_mapping_and_scroll_sync/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/source_mapping_and_scroll_sync/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "# Start\n\n**Bold** and [[Target|short alias]].\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\n# End",
+      "parity_verified": false,
+      "notes": "Existing scroll synchronization and Unicode editing tests pass. New transformed inline syntax needs broader caret testing."
+    },
+    {
+      "id": "large_notes_virtualization",
+      "family": "layout",
+      "status": "partial",
+      "fixture": "inline markdown in this record",
+      "tests": [],
+      "obsidian_evidence": {
+        "mode": "Reading",
+        "version": "1.14.4",
+        "capture": "target/obsidian-reference/capture-1792188394023/large_notes_virtualization/render.json",
+        "screenshot": "target/obsidian-reference/capture-1792188394023/large_notes_virtualization/reading.png"
+      },
+      "opalglass_evidence": {
+        "prepared_rows": "target/markdown-audit/opalglass.json",
+        "native_combined_screenshot": null
+      },
+      "markdown": "# Long note\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\n",
+      "parity_verified": false,
+      "notes": "Opening uses an 8 KiB prefix and long prose/code use 1 KiB display chunks. Very large individual table cells are not yet subdivided."
+    }
+  ],
+  "status_meanings": {
+    "supported": "Native implementation exists; not a claim of exhaustive Obsidian parity.",
+    "partial": "Known rendering or interaction differences.",
+    "missing": "Feature family is not implemented."
+  }
+}

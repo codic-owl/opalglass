@@ -1,11 +1,13 @@
 # Opalglass
 
 A native Markdown workspace built with Rust and GPUI. Notes are ordinary `.md`
-files in a folder you choose. The editor, note model, and Markdown handling are
-original implementations; no Zed editor or Obsidian application code is included.
+files in a folder you choose. The editor and note model are original implementations;
+CommonMark parsing uses pulldown-cmark; rendering stays native and virtualized. No Zed editor or Obsidian
+application code is included.
 
-This is an early desktop prototype targeting Linux only for now. Windows and
-macOS are deferred. It is not yet an Obsidian replacement.
+This is an early desktop application. Linux is tested locally; Windows and macOS
+now have native CI build/test/package jobs, pending their first successful runs
+and real desktop validation. Full Obsidian rendering parity is not established.
 
 ## Run
 
@@ -170,9 +172,20 @@ contents separately when the original file conflicts.
 - **Attachments:** paste a clipboard image with Ctrl V, or drop images/PDFs onto
   a note. Files are copied into the vault's `Attachments/` folder with unique
   names, and relative Markdown links are inserted at the caret. Reading displays
-  standalone images; clicking an attachment opens the system viewer. Undo removes
-  the inserted link but keeps the imported file. Moving notes between folders or
-  moving attachment files currently requires updating these relative links.
+  local images, including images within paragraphs, as native image blocks;
+  clicking an attachment opens the system viewer. Undo removes
+  the inserted link but keeps the imported file. Attachments appear in the explorer
+  and support rename, drag-and-drop moves, and trash. Moving notes, folders, or
+  attachments preserves resolved wiki links, Markdown links, image links, and
+  reference-style destinations, including relative paths and URL escapes.
+- **Saved versions:** **Review saved versions of current note** in the command
+  palette compares earlier saved contents with your editor. Restoring a version
+  is one undoable editor change. Versions are captured before overwrites, including
+  autosaves and link rewrites. They live in `.opalglass-history/` inside the vault
+  and are excluded from discovery/search. Up to 100 unique versions and 64 MiB
+  are retained per note; one oversized version is retained. Storage is keyed by
+  path: histories from before a rename remain under the old path's history key.
+  Bulk recovery records are retained separately and are not pruned automatically.
 - **External changes:** clean notes refresh automatically. For an edited note,
   **Compare versions** shows your text against disk, with an alternate view of
   disk changes since opening. Keep editing, load the disk version (undoable), or
@@ -188,8 +201,11 @@ contents separately when the original file conflicts.
   changes. Review each file's diff and select which files to apply. Changing the
   query requires another preview. Selected files are checked before writing and
   again individually at save time; an error stops the operation and reports how
-  many files were changed. This is not a multi-file transaction or a vault-wide
-  undo operation. Unsaved selected notes must be saved first.
+  many files were changed. A durable recovery record is written before the first
+  replacement. **Undo last bulk replacement** in the command palette survives
+  restarts and checks all files before restoring any; later external edits stop
+  recovery without being overwritten. Interrupted undo can be resumed. Unsaved
+  selected notes must be saved first.
 
 Right-click a file/folder and choose **Move to trash**, or press Delete with the
 explorer focused. Affected dirty tabs save first; conflicts block deletion. Entire
@@ -235,8 +251,7 @@ Typing has a 16 ms debounce; superseded queries and excerpts are discarded.
 
 On Linux the disposable search cache is under
 `$XDG_CACHE_HOME/opalglass/search`, or `~/.cache/opalglass/search`. Cache paths are
-also defined for Windows/macOS, although the desktop application currently targets
-Linux. Caches stay outside the vault. An unavailable, locked or incompatible cache
+also defined for Windows/macOS; native validation there is pending. Caches stay outside the vault. An unavailable, locked or incompatible cache
 falls back to a temporary session index. The app must finish its first index build
 before full-text search is available. Notes remain editable during that build.
 Indexing workers are created only for changed files and shut down after commits
@@ -367,8 +382,10 @@ wiki links preserve their targets, aliases, and headings, including relative lin
 inside moved notes. If a local name shadows the intended target, a leading `/`
 in an updated wiki link explicitly selects the vault root. Code examples and
 unresolved links are left as written.
-Standard Markdown links, attachment references, and external applications' caches
-are not rewritten. Tabs whose contents change are reloaded, resetting their undo
+Markdown links and attachment references are also rewritten without changing their
+labels or titles. Reference definitions are patched in place; code, frontmatter,
+and comments are excluded. Unresolved references remain literal. External
+applications' caches are not rewritten. Tabs whose contents change are reloaded, resetting their undo
 history; other tabs retain their buffers. Existing destinations are never replaced.
 Failed moves attempt to roll back link edits without overwriting concurrent changes
 and report any incomplete rollback. Multi-file moves are not crash-atomic.
@@ -445,7 +462,35 @@ cargo test --manifest-path ui-tests/Cargo.toml
 
 It lives in a separate package because GPUI's test support adds dependencies not
 needed by the application. First use requires network access to download them.
-The CI workflow builds the release executable and runs both test suites on Linux.
+The CI workflow builds release executables, runs both test suites, and produces
+unsigned packages on Ubuntu 22.04, Windows 2022, macOS Apple Silicon, and Intel
+macOS. Runner labels follow [GitHub's supported runner matrix](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+No job uses host-specific CPU tuning. These configured jobs are not evidence of
+successful Windows/macOS execution until they have actually run.
+
+To package a native build locally:
+
+```sh
+cargo build --release --locked
+python3 scripts/dependency_notices.py
+python3 scripts/package.py
+```
+
+Archives and SHA-256 checksums appear in `target/packages/`. Linux gets a tarball
+with a binary, desktop entry and icon; Windows gets a ZIP; macOS gets a ZIP
+containing an `.app` bundle. License notices and build metadata are included.
+These packages are unsigned and are not automatically published. Linux packages
+still require the desktop/graphics libraries listed above; no cross-distribution
+standalone compatibility is claimed. Signing/notarization and native installation
+checks remain release work.
+
+File moves use atomic no-replace rename on Linux/macOS and
+[MoveFileW on Windows](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefilew),
+which also requires the destination not to exist. A local Windows cross-check
+reached native dependency compilation but stopped because the MinGW C compiler
+is absent; the MSVC CI job is the actual Windows build path. The Windows
+no-overwrite file-move module was separately cross-checked successfully against
+`x86_64-pc-windows-gnu` using the actual source and Windows API bindings.
 A workflow file is not evidence of a successful CI run.
 
 For the provided offline development cache, an adapter can run the same tests:
@@ -459,12 +504,34 @@ omit `util/test-support`, an unused Git-repository fixture dependency. GPUI and
 application Rust source remain unchanged. Normal CI uses GPUI's original
 manifest. These tests use GPUI's simulated window and text system, not a GPU.
 
-Verified in the development sandbox: Linux compilation, core unit tests, GPUI
-interaction tests using the offline adapter, and Clippy. Native launch was
-attempted, but the sandbox cannot connect to the advertised Wayland/X11 display
-and exposes no GPU device. The unmodified UI harness is blocked by missing
-offline dependencies. Native visual behavior and actual platform IME input
-remain unverified.
+Verified locally: Linux compilation, core unit tests, GPUI interaction tests using
+the offline adapter, and Clippy. Native desktop checks use isolated fixture vaults
+outside the sandbox, including Reading/Split layout, clipboard image paste, file
+drop, properties, external comparisons, and clean-note refresh. The simulated IME
+tests cover UTF-16 composition, cancellation, selection and undo, but do not
+establish behavior with a real composition engine. The local Fcitx profile only
+has a French keyboard layout configured; a real composing-IME test remains open.
+Screen-reader semantics are also not verified or explicitly exposed by this editor; keyboard
+operation alone is not an accessibility claim. Windows/macOS validation remains
+outstanding.
+
+Obsidian compatibility is tracked in `tests/fixtures/obsidian-coverage.json`.
+It is an audit inventory, **not a claim of full rendering parity**. To capture an
+installed Obsidian build's actual Reading output in a separate fixture vault:
+
+```sh
+node scripts/capture_obsidian_reference.mjs /path/to/obsidian
+```
+
+This needs Node 22+ and a desktop session. It starts only its own test instance,
+uses an isolated profile and a localhost debugging connection, and closes the
+instance on exit. Screenshots, DOM snapshots, and fixture limitations are written
+under ignored `target/obsidian-reference/`. The fixtures include an original PDF,
+WAV, locally generated MP4 (requires ffmpeg/libx264), and an image served by a
+local test HTTP server. The runner records image/PDF readiness and explicitly
+approves only its own Mermaid fixture. `OPALGLASS_REFERENCE_CASES` can restrict a
+capture to comma-separated case IDs. Live Preview and interactive media behavior
+still require additional checks before parity is established.
 
 Before calling this ready for daily use, run the UI harness and then manually:
 
@@ -483,12 +550,59 @@ Before calling this ready for daily use, run the UI harness and then manually:
 
 ## Current boundaries
 
-The original Markdown parser supports common block and inline forms, but is not
-a complete CommonMark implementation. Tables, inline image layout, nested list
-layout, reference links, math, footnotes, and HTML are not implemented. Inline
-code and fenced code remain literal. Standard HTTP(S) and mail links open in the
-system browser on click; wiki links open local notes. Ambiguous bare note titles
-need an explicit vault-relative path.
+Reading now uses a whole-document CommonMark parser: ATX/Setext headings,
+nested ordered/bulleted lists and quotes, aligned tables, reference links,
+inline/fenced/indented code, and task checkboxes. CommonMark emphasis and escapes
+are shared with Live Preview, including highlights and the six colored highlight
+markers. Reading also renders typed, nested callouts with formatted titles and
+expand/collapse controls. Folded bodies leave the virtual row list; find and
+outline jumps expand hidden targets, and tab history stores the original row
+position. Standard and custom task markers work in unordered and ordered lists;
+clicking a Reading checkbox edits its source and supports undo. Reading footnotes
+are numbered in reference order, with formatted definitions at the bottom and
+links back to each reference. Named and inline footnotes are supported, including
+repeated references and folded callouts inside definitions. Comments are removed
+with a sparse source-offset map, so hidden
+text cannot accidentally become an indented code block. Paragraphs and code are
+still divided into bounded display chunks; large individual table cells need
+additional subdivision.
+
+Fenced code uses Syntect's bundled grammars for syntax colors in Reading, Source
+and Live Preview. Opening and full document layout run before background coloring;
+typing, selection, find, and copying retain the original text. Unchanged code
+reuses a cache capped at 4 MiB of decorations, keyed by content hashes. The
+Oniguruma backend is built from bundled source with the target's normal C compiler.
+Unknown languages remain plain. Coloring has a 1 MiB source budget per document
+analysis, stops a block at a line longer than 8 KiB, and stops after reaching
+65,536 spans in that block. Those limits affect colors, not displayed/copied text.
+The bundled grammars and theme are not identical to Obsidian's Prism setup.
+
+The 35-family Obsidian inventory explicitly distinguishes implemented, partial,
+and missing features. **It does not establish 1:1 coverage.** Known gaps include
+unusual highlight delimiter runs, exhaustive code-language coverage, footnote superscripts and Live
+Preview footnotes, math, Mermaid,
+HTML rendering, block references/transclusion, media/PDF/canvas/search embeds,
+remote image loading and exact image dimensions. Live Preview also needs full
+block-level parity, including callout widgets. Standard HTTP(S) and mail links open in the system browser;
+wiki links open local notes. Ambiguous bare titles need an explicit path.
+
+The read-only real-vault audit passed all 4,425 notes (370,107,531 source bytes),
+1,268,134 prepared display rows, and 13,386 parsed references. It checks source
+bounds/UTF-8 boundaries, display spans, nonoverlapping source rows, folded/footer
+projection mappings and footnote return positions, not visual equivalence. This caught and
+fixed an empty-wiki-link range panic missed by small fixtures. To repeat it:
+
+```sh
+cargo run --locked --example markdown_vault_audit -- /path/to/vault
+```
+
+Export native prepared rows for the same fixtures with:
+
+```sh
+cargo run --locked --example markdown_audit > target/markdown-audit.json
+```
+
+The export is structural evidence, not a screenshot comparison or a parity claim.
 
 Search and incoming backlinks use saved contents. Opening a vault first scans
 file/folder names and builds the link resolver, without reading note bodies.
@@ -504,8 +618,8 @@ Saving, creating, or moving a note supersedes stale indexing work. Switching
 vaults cancels the previous scan/index task, and partial or failed index results
 never replace the current snapshot. Rename/move still finishes a complete scan
 before updating wiki links. Later refreshes read only changed files. Search uses
-a persistent Tantivy index. The vault model discards bodies after extracting
-links and a SHA-256 fingerprint; moves read affected notes on demand and verify
+a persistent Tantivy index. The vault model extracts wiki links, standard references and tags in one
+CommonMark pass, then discards bodies after computing a SHA-256 fingerprint; moves read affected notes on demand and verify
 that the fingerprint still matches before applying cached link ranges.
 Search indexing uses up to two Tantivy workers on machines with at least four
 available CPUs, and one on smaller machines. Workers share a 32 MiB indexing
