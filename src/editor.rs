@@ -34,6 +34,10 @@ struct CachedRow {
 }
 
 pub struct ScrollAnchor;
+pub struct FollowLink(pub String);
+pub struct PasteImages(pub Vec<Image>);
+impl EventEmitter<PasteImages> for Editor {}
+impl EventEmitter<FollowLink> for Editor {}
 #[derive(Clone, Copy)]
 pub enum CompletionAction {
     Previous,
@@ -57,6 +61,7 @@ pub struct Editor {
     single_line: bool,
     pub live_preview: bool,
     pub completion_visible: bool,
+    pub accepts_attachments: bool,
     pub font_size: f32,
     pub line_numbers: bool,
     live_revealed: Option<Range<usize>>,
@@ -115,6 +120,7 @@ impl Editor {
             single_line,
             live_preview: false,
             completion_visible: false,
+            accepts_attachments: false,
             font_size: 14.,
             line_numbers: true,
             live_revealed: None,
@@ -352,9 +358,24 @@ impl Editor {
                     self.buffer.insert("");
                 }
                 "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        let text = self.clean_input(&text);
-                        self.buffer.insert(&text);
+                    if let Some(item) = cx.read_from_clipboard() {
+                        let images: Vec<_> = item
+                            .entries()
+                            .iter()
+                            .filter_map(|entry| match entry {
+                                ClipboardEntry::Image(image) => Some(image.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        if self.accepts_attachments && !images.is_empty() {
+                            cx.emit(PasteImages(images));
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if let Some(text) = item.text() {
+                            let text = self.clean_input(&text);
+                            self.buffer.insert(&text);
+                        }
                     }
                 }
                 "z" if shift => self.buffer.redo(),
@@ -601,6 +622,12 @@ impl Editor {
             .find(|r| r.range == self.source_ranges[index])
             .unwrap()
             .clone()
+    }
+    pub fn place_drop_caret(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.bounds.contains(&position) {
+            self.buffer.move_to(self.index_for(position), false);
+            self.reveal_cursor(cx);
+        }
     }
     pub fn set_source_links(&mut self, links: Vec<Range<usize>>, missing: Vec<Range<usize>>) {
         self.syntax_version = self.buffer.revision();
@@ -1351,6 +1378,31 @@ impl Render for Editor {
                     this.focus.focus(window);
                     this.preferred_x = None;
                     let index = this.index_for(event.position);
+                    if !this.single_line
+                        && (event.modifiers.control || event.modifiers.platform)
+                        && !this.code_blocks.iter().any(|range| range.contains(&index))
+                        && !opalglass::properties::frontmatter(this.buffer.text())
+                            .ok()
+                            .flatten()
+                            .is_some_and(|h| h.range.contains(&index))
+                    {
+                        let start = this.buffer.line_start(index);
+                        let end = this.buffer.line_end(index);
+                        let (_, spans, mapping) =
+                            opalglass::markdown::inline_mapped(&this.buffer.text()[start..end]);
+                        if let Some(target) = spans.iter().find_map(|span| {
+                            let range =
+                                start + mapping[span.range.start]..start + mapping[span.range.end];
+                            range
+                                .contains(&index)
+                                .then(|| span.style.target.clone())
+                                .flatten()
+                        }) {
+                            cx.emit(FollowLink(target));
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
                     this.buffer.move_to(index, event.modifiers.shift);
                     if event.click_count >= 3 {
                         this.buffer

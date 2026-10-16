@@ -2,6 +2,16 @@
 //! No HTML evaluation, scripting, or source from Zed's editor.
 use std::ops::Range;
 
+pub const TAG_TARGET_PREFIX: &str = "opalglass-tag:";
+
+pub fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag
+            .chars()
+            .all(|c| c.is_alphanumeric() || "_-/".contains(c))
+        && !tag.chars().all(|c| c.is_numeric())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WikiLink {
     pub target: String,
@@ -27,6 +37,7 @@ pub struct InlineStyle {
     pub code: bool,
     pub strike: bool,
     pub target: Option<String>,
+    pub image: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +125,18 @@ fn inline_impl(source: &str, mapped: bool) -> (String, Vec<Span>, Vec<usize>) {
                 rest = &escaped[c.len_utf8()..];
                 continue;
             }
+            if rest.starts_with("![")
+                && !rest.starts_with("![[")
+                && let Some(middle) = rest.find("](")
+                && let Some(end) = rest[middle + 2..].find(')')
+            {
+                let mut style = inherited.clone();
+                style.target = Some(rest[middle + 2..middle + 2 + end].into());
+                style.image = true;
+                append(&rest[2..middle], &style, out, spans, mapping, base);
+                rest = &rest[middle + end + 3..];
+                continue;
+            }
             if rest.starts_with("[[")
                 && wiki_end.is_some_and(|end| end >= source.len() - rest.len() + 2)
                 && let Some(end) = rest[2..].find("]]")
@@ -139,6 +162,26 @@ fn inline_impl(source: &str, mapped: bool) -> (String, Vec<Span>, Vec<usize>) {
                 append(&rest[1..middle], &style, out, spans, mapping, base);
                 rest = &rest[middle + end + 3..];
                 continue;
+            }
+            let position = source.len() - rest.len();
+            if rest.starts_with('#')
+                && inherited.target.is_none()
+                && !inherited.code
+                && (position == 0
+                    || source[..position]
+                        .ends_with(|c: char| c.is_whitespace() || "([{ ".contains(c)))
+            {
+                let end = rest[1..]
+                    .find(|c: char| !c.is_alphanumeric() && !"_-/".contains(c))
+                    .map_or(rest.len(), |i| i + 1);
+                let tag = &rest[1..end];
+                if valid_tag(tag) {
+                    let mut style = inherited.clone();
+                    style.target = Some(format!("{TAG_TARGET_PREFIX}{tag}"));
+                    append(&rest[..end], &style, out, spans, mapping, base);
+                    rest = &rest[end..];
+                    continue;
+                }
             }
             let mut matched = false;
             for (index, delimiter) in ["`", "**", "__", "~~", "*", "_"].into_iter().enumerate() {
@@ -176,7 +219,7 @@ fn inline_impl(source: &str, mapped: bool) -> (String, Vec<Span>, Vec<usize>) {
                 let first = rest.chars().next().unwrap().len_utf8();
                 let n = first
                     + rest[first..]
-                        .find(['\\', '[', '`', '*', '_', '~'])
+                        .find(['\\', '[', '`', '*', '_', '~', '#', '!'])
                         .unwrap_or(rest.len() - first);
                 append(&rest[..n], &inherited, out, spans, mapping, base);
                 rest = &rest[n..];
@@ -214,13 +257,17 @@ pub fn blocks_with_ranges(source: &str) -> Vec<(Block, Range<usize>)> {
     let mut fence: Option<(char, usize)> = None;
     let mut paragraph_range = 0..0;
     let mut fence_start = 0;
-    let mut offset = 0;
+    let mut offset = crate::properties::frontmatter(source)
+        .ok()
+        .flatten()
+        .map_or(0, |h| h.range.end);
+    let content = &source[offset..];
     fn flush(result: &mut Vec<(Block, Range<usize>)>, text: &mut String, range: &Range<usize>) {
         if !text.is_empty() {
             result.push((Block::Paragraph(std::mem::take(text)), range.clone()));
         }
     }
-    for raw in source.split_inclusive('\n') {
+    for raw in content.split_inclusive('\n') {
         let start = offset;
         offset += raw.len();
         let line = raw
@@ -366,28 +413,19 @@ pub fn tags(source: &str) -> Vec<String> {
             | Block::Task(_, s) => s,
             Block::Code(_) | Block::Rule => continue,
         };
-        let (display, spans) = inline(&text);
-        for (index, _) in display.match_indices('#') {
-            if index > 0
-                && !display[..index].ends_with(|c: char| c.is_whitespace() || "([{".contains(c))
+        let (_, spans) = inline(&text);
+        for span in spans {
+            if let Some(tag) = span
+                .style
+                .target
+                .as_deref()
+                .and_then(|t| t.strip_prefix(TAG_TARGET_PREFIX))
             {
-                continue;
-            }
-            if spans
-                .iter()
-                .any(|s| s.range.contains(&index) && (s.style.code || s.style.target.is_some()))
-            {
-                continue;
-            }
-            let tag: String = display[index + 1..]
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || "_-/".contains(*c))
-                .collect();
-            if !tag.is_empty() && !tag.chars().all(|c| c.is_numeric()) {
-                tags.insert(tag);
+                tags.insert(tag.to_owned());
             }
         }
     }
+    tags.extend(crate::properties::tags(source));
     tags.into_iter().collect()
 }
 

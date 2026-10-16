@@ -32,6 +32,7 @@ const SPLIT_DIVIDER_WIDTH: f32 = 7.;
 struct Tab {
     path: PathBuf,
     baseline: String,
+    external_changed: bool,
     editor: Entity<Editor>,
     baseline_normalized: Arc<String>,
     dirty_cache: Cell<(u64, bool)>,
@@ -51,6 +52,8 @@ struct Tab {
     _subscription: Subscription,
     _scroll_subscription: Subscription,
     _completion_subscription: Subscription,
+    _link_subscription: Subscription,
+    _attachment_subscription: Subscription,
 }
 impl Tab {
     fn cancel_opening_analysis(&mut self) {
@@ -197,6 +200,13 @@ pub struct Workspace {
     mode: ViewMode,
     preferences: opalglass::state::Preferences,
     settings_open: bool,
+    properties_panel: Option<PropertiesPanel>,
+    comparison: Option<ExternalComparison>,
+    _comparison: Option<Task<()>>,
+    mentions: Option<MentionsPanel>,
+    _mentions: Option<Task<()>>,
+    replace_panel: Option<ReplacePanel>,
+    _replace: Option<Task<()>>,
     picker: Option<PickerMode>,
     picker_query: Option<String>,
     picker_selected: usize,
@@ -659,6 +669,13 @@ impl Workspace {
             mode: ViewMode::Split,
             preferences: preferences.clone(),
             settings_open: false,
+            properties_panel: None,
+            comparison: None,
+            _comparison: None,
+            mentions: None,
+            _mentions: None,
+            replace_panel: None,
+            _replace: None,
             picker: None,
             picker_query: None,
             picker_selected: 0,
@@ -959,6 +976,10 @@ impl Workspace {
                 self.save_tab(self.active, cx);
             }
             C::Find => self.open_find(window, cx),
+            C::Properties => self.open_properties(window, cx),
+            C::Mentions => self.open_mentions(window, cx),
+            C::Compare => self.open_comparison(window, cx),
+            C::Replace => self.open_replace(window, cx),
             C::Search => {
                 self.navigation.hidden = false;
                 self.search.update(cx, |e, cx| {
@@ -1707,20 +1728,22 @@ impl Workspace {
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             match vault.notes.iter().find(|n| n.path == tab.path) {
                 Some(note) if !note.matches_text(&tab.baseline) => {
+                    tab.external_changed = true;
                     if !tab.dirty(cx) {
                         reload.push(index);
                     } else {
-                        self.status = "External changes detected. Save a copy or reload before saving this note.".into();
+                        self.status = "External changes detected. Compare versions to review your edits and the disk version.".into();
                         self.error = true;
                     }
                 }
                 None => {
+                    tab.external_changed = true;
                     self.status =
                         "An open note was removed from disk. Save a copy to preserve its contents."
                             .into();
                     self.error = true;
                 }
-                _ => (),
+                _ => tab.external_changed = false,
             }
         }
         self.vault = Some(vault);
@@ -2479,7 +2502,17 @@ impl Workspace {
         self.searching = true;
         // A saved/externally changed snapshot must finish updating before body
         // results are used. During first indexing, path lookup remains available.
-        if self.search_engine.is_some() && !self.search_ready() && self.search_error.is_none() {
+        let tag = query
+            .trim()
+            .strip_prefix("tag:")
+            .or_else(|| query.trim().strip_prefix('#'))
+            .filter(|tag| markdown::valid_tag(tag))
+            .map(str::to_owned);
+        if tag.is_none()
+            && self.search_engine.is_some()
+            && !self.search_ready()
+            && self.search_error.is_none()
+        {
             return;
         }
         let engine = self
@@ -2503,7 +2536,19 @@ impl Workspace {
                     let result = (|| -> opalglass::search::Result<Vec<SearchRow>> {
                         let ticket = Ticket::from_cancelled(cancelled);
                         ticket.check()?;
-                        if let Some(engine) = engine {
+                        if let Some(tag) = tag {
+                            Ok(vault
+                                .notes
+                                .iter()
+                                .filter(|n| n.has_tag(&tag))
+                                .map(|n| SearchRow {
+                                    path: n.path.clone(),
+                                    title: n.title.clone(),
+                                    hit: None,
+                                    snippet: None,
+                                })
+                                .collect())
+                        } else if let Some(engine) = engine {
                             let result = engine.search(&search_query, &ticket)?;
                             Ok(result
                                 .hits
@@ -2926,6 +2971,7 @@ impl Workspace {
             editor
         });
         let mut state = (revision, 0, 0);
+        editor.update(cx, |editor, _| editor.accepts_attachments = true);
         let subscription = cx.observe(&editor, move |_, editor, cx| {
             let buffer = &editor.read(cx).buffer;
             let next = (buffer.revision(), buffer.cursor(), buffer.anchor());
@@ -2971,10 +3017,48 @@ impl Workspace {
                 }
             },
         );
+        let link_subscription = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _, link: &crate::editor::FollowLink, window, cx| {
+                if external_link(&link.0) {
+                    cx.open_url(&link.0);
+                } else {
+                    this.follow(link.0.clone(), window, cx);
+                }
+            },
+        );
+        let attachment_subscription = cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, images: &crate::editor::PasteImages, window, cx| {
+                let inputs = images
+                    .0
+                    .iter()
+                    .map(|image| {
+                        let extension = match image.format {
+                            ImageFormat::Png => "png",
+                            ImageFormat::Jpeg => "jpg",
+                            ImageFormat::Webp => "webp",
+                            ImageFormat::Gif => "gif",
+                            ImageFormat::Svg => "svg",
+                            ImageFormat::Bmp => "bmp",
+                            ImageFormat::Tiff => "tiff",
+                        };
+                        opalglass::attachments::Input::Bytes {
+                            name: format!("Screenshot.{extension}"),
+                            bytes: image.bytes.clone(),
+                        }
+                    })
+                    .collect();
+                this.import_attachments(editor.clone(), inputs, window, cx);
+            },
+        );
         let complete = prepared.complete;
         self.tabs.push(Tab {
             path,
             baseline: text,
+            external_changed: false,
             baseline_normalized: normalized,
             dirty_cache: Cell::new((revision, dirty)),
             preview_scroll: ListState::new(prepared.rows.len(), ListAlignment::Top, px(100.)),
@@ -2994,6 +3078,8 @@ impl Workspace {
             _subscription: subscription,
             _scroll_subscription: scroll_subscription,
             _completion_subscription: completion_subscription,
+            _link_subscription: link_subscription,
+            _attachment_subscription: attachment_subscription,
         });
     }
     fn finish_note_navigation(
@@ -3066,7 +3152,8 @@ impl Workspace {
             })
             .map(|link| link.range.clone())
             .collect();
-        let mut code_blocks: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut code_blocks: Vec<std::ops::Range<usize>> =
+            tab.prepared.frontmatter.iter().cloned().collect();
         for row in &tab.prepared.rows {
             if matches!(row.kind, Kind::Code) {
                 if let Some(last) = code_blocks.last_mut()
@@ -3086,7 +3173,16 @@ impl Workspace {
         });
     }
     fn link_highlight(&self, target: &str) -> HighlightStyle {
-        let missing = !external_link(target)
+        let attachment = self
+            .vault
+            .as_ref()
+            .zip(self.tabs.get(self.active))
+            .is_some_and(|(vault, tab)| {
+                opalglass::attachments::resolve(&vault.root, &tab.path, target).is_ok()
+            });
+        let missing = !attachment
+            && !target.starts_with(markdown::TAG_TARGET_PREFIX)
+            && !external_link(target)
             && self.tabs.get(self.active).is_some_and(|tab| {
                 self.vault
                     .as_ref()
@@ -3772,6 +3868,7 @@ impl Workspace {
                     Ok((text, mut buffer, prepared)) => {
                         let cursor = tab.editor.read(cx).buffer.cursor();
                         buffer.move_to(cursor, false);
+                        tab.external_changed = false;
                         tab.baseline = text;
                         tab.baseline_normalized = buffer.snapshot();
                         let revision = buffer.revision();
@@ -3871,6 +3968,7 @@ impl Workspace {
         match vault.save(&tab.path, &tab.baseline, &text) {
             Ok(()) => {
                 self.revision += 1;
+                self.tabs[index].external_changed = false;
                 self.tabs[index].baseline = text;
                 self.tabs[index].baseline_normalized =
                     self.tabs[index].editor.read(cx).buffer.snapshot();
@@ -3889,6 +3987,9 @@ impl Workspace {
                 true
             }
             Err(error) => {
+                if matches!(error, opalglass::vault::SaveError::Conflict) {
+                    self.tabs[index].external_changed = true;
+                }
                 self.message(error.to_string(), true, cx);
                 self.log_performance("Save failed", target, started, cx);
                 false
@@ -4894,8 +4995,23 @@ impl Workspace {
             Modal::None => (),
         }
     }
+    fn filter_tag(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigation.hidden = false;
+        self.search
+            .update(cx, |editor, cx| editor.set_text(&format!("tag:{tag}"), cx));
+        self.search.read(cx).focus.focus(window);
+        cx.notify();
+    }
     fn follow(&mut self, target: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tag) = target.strip_prefix(markdown::TAG_TARGET_PREFIX) {
+            self.filter_tag(tag, window, cx);
+            return;
+        }
         if let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active)) {
+            if let Ok(path) = opalglass::attachments::resolve(&vault.root, &tab.path, &target) {
+                cx.open_with_system(&path);
+                return;
+            }
             if let Some(path) = vault.resolve(&tab.path, &target) {
                 self.open_note_at(
                     path,
@@ -4925,6 +5041,52 @@ impl Workspace {
             && !event.keystroke.modifiers.alt;
         let shift = event.keystroke.modifiers.shift;
         let key = event.keystroke.key.as_str();
+        if self.replace_panel.is_some() {
+            if key == "escape" {
+                self.replace_panel = None;
+                self._replace = None;
+                self.focus_document(window, cx);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            return;
+        }
+        if command && shift && key == "h" {
+            self.open_replace(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.mentions.is_some() {
+            if key == "escape" {
+                self.mentions = None;
+                self._mentions = None;
+                self.focus_document(window, cx);
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if self.comparison.is_some() {
+            if key == "escape" {
+                self.comparison = None;
+                self.focus_document(window, cx);
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if self.properties_panel.is_some() {
+            if key == "escape" {
+                self.properties_panel = None;
+                self.focus_document(window, cx);
+                cx.notify();
+                cx.stop_propagation();
+            } else if command && key == "enter" {
+                self.apply_properties(window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.picker.is_some() {
             self.update_picker(cx);
             let count = self.picker_items.len();
@@ -5249,6 +5411,31 @@ impl Workspace {
         .into_any_element()
     }
     fn preview_row(&self, index: usize, row: &PreviewRow, cx: &mut Context<Self>) -> AnyElement {
+        if row.spans.len() == 1
+            && row.spans[0].style.image
+            && let Some(target) = row.spans[0].style.target.as_deref()
+            && let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active))
+            && let Ok(path) = opalglass::attachments::resolve(&vault.root, &tab.path, target)
+        {
+            return div()
+                .id(("attachment-image", index))
+                .my_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .debug_selector(move || format!("attachment-image-{index}"))
+                .child(
+                    img(path.clone())
+                        .w_full()
+                        .h(px(320.))
+                        .object_fit(ObjectFit::Contain),
+                )
+                .child(caption(row.text.to_string()))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| cx.open_with_system(&path))
+                .into_any_element();
+        }
+
         let mut style = match row.kind {
             Kind::Heading(level) => div()
                 .line_height(relative(1.3))
@@ -5658,7 +5845,15 @@ impl Render for Workspace {
                         .min_w_0()
                         .truncate(),
                 );
-            let mut modes = div().flex().flex_shrink_0().gap_1();
+            let mut modes = div().flex().flex_shrink_0().gap_1().child(
+                icon_button(
+                    "properties",
+                    ToolbarIcon::Sort,
+                    "Edit properties".into(),
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_properties(window, cx))),
+            );
             for (id, label, icon, mode) in [
                 ("source", "Source", ToolbarIcon::Source, ViewMode::Source),
                 ("split", "Split", ToolbarIcon::Split, ViewMode::Split),
@@ -5743,10 +5938,51 @@ impl Render for Workspace {
                     ),
             );
             main = main.child(tools);
+            if tab.external_changed {
+                main = main.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .bg(rgb(0x302b25))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(caption(
+                            "This note changed outside Opalglass. Your edits are preserved.",
+                        ))
+                        .child(
+                            button("compare-external", "Compare versions")
+                                .debug_selector(|| "compare-external".into())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_comparison(window, cx)
+                                })),
+                        ),
+                );
+            }
             if self.find.open {
                 main = main.child(self.find_bar(cx));
             }
             let mut panes = div()
+                .id("attachment-drop-zone")
+                .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(rgb(0x28283b)))
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                    if let Some(tab) = this.tabs.get(this.active) {
+                        tab.editor.update(cx, |editor, cx| {
+                            editor.place_drop_caret(window.mouse_position(), cx)
+                        });
+                        this.import_attachments(
+                            tab.editor.clone(),
+                            paths
+                                .paths()
+                                .iter()
+                                .cloned()
+                                .map(opalglass::attachments::Input::File)
+                                .collect(),
+                            window,
+                            cx,
+                        );
+                    }
+                }))
                 .debug_selector(|| "note-panes".into())
                 .flex_1()
                 .min_h_0()
@@ -6165,6 +6401,18 @@ impl Render for Workspace {
         }
         if self.picker.is_some() {
             root = root.child(self.picker_panel(cx));
+        }
+        if self.replace_panel.is_some() {
+            root = root.child(self.render_replace(cx));
+        }
+        if self.mentions.is_some() {
+            root = root.child(self.render_mentions(cx));
+        }
+        if self.comparison.is_some() {
+            root = root.child(self.render_comparison(cx));
+        }
+        if self.properties_panel.is_some() {
+            root = root.child(self.render_properties(cx));
         }
         if self.settings_open {
             root = root.child(self.settings_panel(cx));
@@ -6722,23 +6970,13 @@ impl Render for Connections {
                                                             );
                                                         }
                                                         Connection::Tag(tag) => {
-                                                            let query = format!("#{tag}");
+                                                            let tag = tag.clone();
                                                             let _ = this.owner.update(
                                                                 cx,
                                                                 |workspace, cx| {
-                                                                    workspace.search.update(
-                                                                        cx,
-                                                                        |editor, cx| {
-                                                                            editor.set_text(
-                                                                                &query, cx,
-                                                                            )
-                                                                        },
-                                                                    );
-                                                                    workspace
-                                                                        .search
-                                                                        .read(cx)
-                                                                        .focus
-                                                                        .focus(window);
+                                                                    workspace.filter_tag(
+                                                                        &tag, window, cx,
+                                                                    )
                                                                 },
                                                             );
                                                         }
@@ -6775,3 +7013,13 @@ impl Render for Sidebar {
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
+
+include!("workspace_properties.rs");
+
+include!("workspace_comparison.rs");
+
+include!("workspace_attachments.rs");
+
+include!("workspace_mentions.rs");
+
+include!("workspace_replace.rs");

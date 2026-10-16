@@ -1,11 +1,15 @@
+pub mod attachments;
 pub mod buffer;
+pub mod changes;
 pub mod commands;
+pub mod comparison;
 pub mod document;
 pub mod editing;
 pub mod live;
 pub mod markdown;
 pub mod navigation;
 pub mod prepared;
+pub mod properties;
 pub mod state;
 pub mod vault;
 

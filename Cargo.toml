@@ -16,6 +16,8 @@ sha2 = "=0.10.9"
 time = { version = "=0.3.55", features = ["local-offset"] }
 rustix = { version = "=1.1.2", features = ["fs"] }
 mimalloc = "=0.1.52"
+serde_yaml_ng = "=0.10.0"
+similar = "=2.7.0"
 
 [profile.dev]
 # Optimize all runtime dependencies so native rendering stays responsive.

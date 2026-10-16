@@ -17,6 +17,7 @@ pub struct Note {
     pub path: PathBuf,
     pub title: String,
     pub links: Vec<WikiLink>,
+    pub tags: Vec<String>,
     content_hash: [u8; 32],
     search_path: String,
     stamp: Option<Stamp>,
@@ -52,6 +53,16 @@ impl Note {
     pub fn matches_text(&self, text: &str) -> bool {
         self.content_hash == <[u8; 32]>::from(Sha256::digest(text.as_bytes()))
     }
+    pub fn has_tag(&self, query: &str) -> bool {
+        let query = query.trim_start_matches('#').to_lowercase();
+        self.tags.iter().any(|tag| {
+            let tag = tag.to_lowercase();
+            tag == query
+                || tag
+                    .strip_prefix(&query)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
     pub fn modified(&self) -> Option<SystemTime> {
         self.stamp.as_ref().and_then(|stamp| stamp.modified)
     }
@@ -67,6 +78,7 @@ impl Note {
                 .into_owned(),
             search_path: path.to_string_lossy().to_lowercase(),
             links: wiki_links(text),
+            tags: crate::markdown::tags(text),
             path,
             content_hash: Sha256::digest(text.as_bytes()).into(),
             stamp,

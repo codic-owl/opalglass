@@ -12,6 +12,10 @@ pub enum Command {
     NewFolder,
     Save,
     Find,
+    Properties,
+    Mentions,
+    Compare,
+    Replace,
     Search,
     Source,
     Split,
@@ -39,6 +43,14 @@ impl Command {
         (Self::NewFolder, "Create new folder", "Ctrl Shift N"),
         (Self::Save, "Save current note", "Ctrl S"),
         (Self::Find, "Find in current note", "Ctrl F"),
+        (Self::Properties, "Edit note properties", ""),
+        (Self::Mentions, "Find unlinked mentions of current note", ""),
+        (Self::Compare, "Compare current note with disk", ""),
+        (
+            Self::Replace,
+            "Search and replace across vault",
+            "Ctrl Shift H",
+        ),
         (Self::Search, "Search vault", "Ctrl P"),
         (Self::Source, "View: source editor", ""),
         (Self::Split, "View: split editor and reading", ""),
@@ -73,6 +85,7 @@ impl Command {
             Self::NewNote
             | Self::NewFolder
             | Self::Search
+            | Self::Replace
             | Self::Bookmarks
             | Self::DailyNote
             | Self::RestoreTrash => vault,

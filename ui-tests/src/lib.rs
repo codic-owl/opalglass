@@ -313,6 +313,257 @@ mod workspace {
         use gpui::TestAppContext;
 
         #[gpui::test]
+        fn attachment_paste_at_start_preserves_frontmatter_and_deleted_note_can_be_restored(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let source = "---\ntags: [work]\n---\nBody\n";
+            let path = folder.path().join("A.md");
+            std::fs::write(&path, source).unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update_in(cx, |this, window, cx| {
+                this.import_attachments(this.tabs[this.active].editor.clone(), vec![opalglass::attachments::Input::Bytes { name: "Test.pdf".into(), bytes: b"%PDF-1.7".to_vec() }], window, cx);
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                let text = this.tabs[this.active].editor.read(cx).buffer.text();
+                assert!(text.starts_with("---\ntags: [work]\n---\n[Test.pdf]"));
+                assert!(text.ends_with("Body\n"));
+            });
+            std::fs::remove_file(&path).unwrap();
+            view.update_in(cx, |this, window, cx| this.open_comparison(window, cx)); cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.comparison.as_ref().unwrap().deleted));
+            click(cx, "comparison-save-ours"); cx.run_until_parked();
+            assert!(std::fs::read_to_string(&path).unwrap().starts_with("---\ntags: [work]\n---\n[Test.pdf]"));
+        }
+
+        #[gpui::test]
+        fn unlinked_mentions_link_saved_text_and_refuse_unsaved_or_stale_sources(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "A mentions Target twice: Target. [[Target]] `Target`\n").unwrap();
+            std::fs::write(folder.path().join("Target.md"), "Target note").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update_in(cx, |this, window, cx| this.open_note("Target.md".into(), window, cx)); cx.run_until_parked();
+            view.update_in(cx, |this, window, cx| this.open_mentions(window, cx)); cx.run_until_parked();
+            view.read_with(cx, |this, _| assert_eq!(this.mentions.as_ref().unwrap().items.len(), 2));
+            click(cx, "link-mention-0"); cx.run_until_parked();
+            assert!(std::fs::read_to_string(folder.path().join("A.md")).unwrap().contains("[[/Target|Target]]"));
+            view.read_with(cx, |this, _| assert_eq!(this.mentions.as_ref().unwrap().items.len(), 1));
+            std::fs::write(folder.path().join("A.md"), "External Target change").unwrap();
+            click(cx, "link-mention-0"); cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.mentions.as_ref().unwrap().error.as_ref().unwrap().contains("changed")));
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "External Target change");
+            view.update(cx, |this, cx| {
+                let tab = this.tabs.iter().find(|t| t.path == PathBuf::from("A.md")).unwrap();
+                tab.editor.update(cx, |e, cx| e.set_text("Unsaved Target change", cx));
+            });
+            view.update_in(cx, |this, window, cx| this.open_mentions(window, cx)); cx.run_until_parked();
+            click(cx, "link-mention-0"); cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.mentions.as_ref().unwrap().error.as_ref().unwrap().contains("unsaved")));
+        }
+
+        #[gpui::test]
+        fn workspace_replace_requires_current_preview_checks_all_files_and_respects_selection(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            for (path, text) in [("A.md", "apple and APPLE\n"), ("B.md", "apple\n"), ("C.md", "untouched\n")] {
+                std::fs::write(folder.path().join(path), text).unwrap();
+            }
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-shift-h");
+            view.update(cx, |this, cx| {
+                let panel = this.replace_panel.as_mut().unwrap();
+                panel.find.update(cx, |e, cx| e.set_text("apple", cx));
+                panel.replacement.update(cx, |e, cx| e.set_text("pear", cx));
+            });
+            click(cx, "replace-preview"); cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "apple and APPLE\n");
+            view.read_with(cx, |this, _| {
+                let panel = this.replace_panel.as_ref().unwrap();
+                assert_eq!(panel.plans.len(), 2);
+                assert_eq!(panel.plans[0].edits.len(), 2);
+                assert!(panel.plans[0].preview.iter().any(|r| r.text == "pear and pear"));
+            });
+            view.update(cx, |this, cx| this.replace_panel.as_mut().unwrap().replacement.update(cx, |e, cx| e.set_text("banana", cx)));
+            click(cx, "replace-apply"); cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "apple and APPLE\n");
+            click(cx, "replace-preview"); cx.run_until_parked();
+            std::fs::write(folder.path().join("B.md"), "External apple change\n").unwrap();
+            click(cx, "replace-apply"); cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "apple and APPLE\n");
+            view.read_with(cx, |this, _| assert!(this.replace_panel.as_ref().unwrap().message.as_ref().unwrap().contains("changed")));
+            click(cx, "replace-preview"); cx.run_until_parked();
+            click(cx, "replace-select-1");
+            click(cx, "replace-apply"); cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "banana and banana\n");
+            assert_eq!(std::fs::read_to_string(folder.path().join("B.md")).unwrap(), "External apple change\n");
+            assert_eq!(std::fs::read_to_string(folder.path().join("C.md")).unwrap(), "untouched\n");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[0].editor.read(cx).buffer.text(), "banana and banana\n"));
+        }
+
+        #[gpui::test]
+        fn screenshot_paste_and_attachment_import_insert_resolvable_links_and_undo(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::create_dir(folder.path().join("Nested")).unwrap();
+            std::fs::write(folder.path().join("Nested/A.md"), "Note\n").unwrap();
+            let external = tempfile::tempdir().unwrap();
+            let pdf = external.path().join("Reference (one).pdf");
+            std::fs::write(&pdf, "%PDF-1.7\nfixture").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update_in(cx, |this, window, cx| {
+                this.set_mode(super::ViewMode::Source, window, cx);
+                let editor = &this.tabs[this.active].editor;
+                editor.update(cx, |e, cx| e.jump_to(e.buffer.text().len(), cx));
+                cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![137,80,78,71,13,10,26,10])));
+            });
+            cx.simulate_keystrokes("ctrl-v"); cx.run_until_parked();
+            assert_eq!(std::fs::read(folder.path().join("Attachments/Screenshot.png")).unwrap(), vec![137,80,78,71,13,10,26,10]);
+            view.read_with(cx, |this, cx| {
+                let tab = &this.tabs[this.active];
+                let text = tab.editor.read(cx).buffer.text();
+                assert!(text.contains("![Screenshot.png](../Attachments/Screenshot.png)"));
+                assert!(tab.dirty(cx));
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "Note\n"));
+            view.update_in(cx, |this, window, cx| {
+                this.import_attachments(this.tabs[this.active].editor.clone(), vec![opalglass::attachments::Input::File(pdf.clone())], window, cx);
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                let text = this.tabs[this.active].editor.read(cx).buffer.text();
+                assert!(text.contains("[Reference -one-.pdf](../Attachments/Reference%20-one-.pdf)"));
+                assert!(!text.contains("![Reference"));
+            });
+            assert_eq!(std::fs::read_to_string(&pdf).unwrap(), "%PDF-1.7\nfixture");
+            cx.simulate_keystrokes("ctrl-s");
+            assert!(std::fs::read_to_string(folder.path().join("Nested/A.md")).unwrap().contains("Attachments/Reference"));
+        }
+
+        #[gpui::test]
+        fn external_comparison_rechecks_disk_and_preserves_both_versions_until_resolved(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let path = folder.path().join("A.md");
+            std::fs::write(&path, "# Title\nBase text\n").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |e, cx| e.set_text("# Title\nLocal text\n", cx)));
+            std::fs::write(&path, "# Title\nRemote text\n").unwrap();
+            view.update(cx, |this, cx| {
+                let mut vault = this.vault.clone().unwrap(); vault.refresh().unwrap();
+                this.apply_scan(vault, this.revision, cx);
+            });
+            click(cx, "compare-external");
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| {
+                use opalglass::comparison::Kind;
+                let panel = this.comparison.as_ref().unwrap();
+                assert!(panel.rows.iter().any(|r| r.kind == Kind::Removed && r.text == "Local text"));
+                assert!(panel.rows.iter().any(|r| r.kind == Kind::Added && r.text == "Remote text"));
+                assert!(panel.disk_changes.iter().any(|r| r.kind == Kind::Removed && r.text == "Base text"));
+            });
+            std::fs::write(&path, "Changed again\n").unwrap();
+            click(cx, "comparison-save-ours");
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "Changed again\n");
+            view.read_with(cx, |this, cx| {
+                assert!(this.comparison.as_ref().unwrap().error.as_ref().unwrap().contains("changed again"));
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "# Title\nLocal text\n");
+            });
+            click(cx, "comparison-refresh"); cx.run_until_parked();
+            click(cx, "comparison-save-ours"); cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Title\nLocal text\n");
+            view.read_with(cx, |this, cx| {
+                assert!(this.comparison.is_none());
+                assert!(!this.tabs[this.active].dirty(cx));
+            });
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |e, cx| e.set_text("Unsaved again\n", cx)));
+            std::fs::write(&path, "Remote again\n").unwrap();
+            view.update_in(cx, |this, window, cx| this.open_comparison(window, cx)); cx.run_until_parked();
+            click(cx, "comparison-use-disk"); cx.run_until_parked();
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "Remote again\n"));
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "Unsaved again\n");
+                assert!(this.tabs[this.active].dirty(cx));
+            });
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "Remote again\n");
+        }
+
+        #[gpui::test]
+        fn properties_fields_yaml_switch_undo_validation_and_stale_edits(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let source = "---\n# preserve this comment\ntitle: Original\ntags: [work]\n---\n\n# Body\nUntouched text.\n";
+            std::fs::write(folder.path().join("A.md"), source).unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            click(cx, "properties");
+            view.update(cx, |this, cx| {
+                let panel = this.properties_panel.as_mut().unwrap();
+                panel.rows[0].value.update(cx, |e, cx| e.set_text("A much longer title", cx));
+                this.switch_properties_mode(cx);
+            });
+            view.read_with(cx, |this, cx| {
+                let panel = this.properties_panel.as_ref().unwrap();
+                assert!(panel.raw);
+                assert!(panel.yaml.read(cx).buffer.text().contains("# preserve this comment"));
+                assert!(panel.yaml.read(cx).buffer.text().contains("A much longer title"));
+            });
+            view.update(cx, |this, cx| this.switch_properties_mode(cx));
+            click(cx, "apply-properties");
+            view.read_with(cx, |this, cx| {
+                assert!(this.properties_panel.is_none());
+                let text = this.tabs[this.active].editor.read(cx).buffer.text();
+                assert!(text.ends_with("---\n\n# Body\nUntouched text.\n"));
+                assert!(text.contains("title: A much longer title"));
+                assert!(text.contains("# preserve this comment"));
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), source));
+            click(cx, "properties");
+            view.update(cx, |this, cx| this.properties_panel.as_mut().unwrap().rows[0].value.update(cx, |e, cx| e.set_text("[invalid", cx)));
+            click(cx, "apply-properties");
+            view.read_with(cx, |this, cx| {
+                assert!(this.properties_panel.as_ref().unwrap().error.is_some());
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), source);
+            });
+            cx.simulate_keystrokes("escape");
+            click(cx, "properties");
+            view.update(cx, |this, cx| this.tabs[this.active].editor.update(cx, |e, cx| e.set_text("New external contents", cx)));
+            click(cx, "apply-properties");
+            view.read_with(cx, |this, cx| {
+                assert!(this.properties_panel.as_ref().unwrap().error.as_ref().unwrap().contains("changed"));
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "New external contents");
+            });
+        }
+
+        #[gpui::test]
+        fn tag_filter_matches_metadata_and_nested_tags_without_plain_word_hits(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            for (path, text) in [
+                ("A.md", "#work and #other"),
+                ("B.md", "---\ntags: [work/research]\n---\nBody"),
+                ("C.md", "work #workshop `#work` [[work|#work]]"),
+            ] { std::fs::write(folder.path().join(path), text).unwrap(); }
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update_in(cx, |this, window, cx| {
+                this.navigation.hidden = true;
+                this.follow(format!("{}work", opalglass::markdown::TAG_TARGET_PREFIX), window, cx);
+            });
+            cx.run_until_parked();
+            // Debounced search runs on the test executor's clock.
+            cx.executor().advance_clock(std::time::Duration::from_millis(20));
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert!(!this.navigation.hidden);
+                assert_eq!(this.search.read(cx).buffer.text(), "tag:work");
+                assert_eq!(this.search_results.iter().map(|r| r.path.clone()).collect::<Vec<_>>(), vec![PathBuf::from("A.md"), PathBuf::from("B.md")]);
+            });
+        }
+
+        #[gpui::test]
         fn history_restores_positions_reopens_closed_notes_and_branches(cx: &mut TestAppContext) {
             let folder = tempfile::tempdir().unwrap();
             for name in ["A.md", "B.md", "C.md"] {
@@ -2189,7 +2440,7 @@ mod workspace {
             cx.run_until_parked();
             click(cx, "connection-400");
             view.read_with(cx, |this, cx| {
-                assert_eq!(this.search.read(cx).buffer.text(), "#topic")
+                assert_eq!(this.search.read(cx).buffer.text(), "tag:topic")
             });
             click(cx, "connection-399");
             view.read_with(cx, |this, cx| {

@@ -37,6 +37,7 @@ pub struct Prepared {
     pub words: usize,
     pub links: Vec<WikiLink>,
     pub headings: Vec<(String, usize)>,
+    pub frontmatter: Option<std::ops::Range<usize>>,
 }
 
 impl Prepared {
@@ -67,6 +68,10 @@ impl Prepared {
         }
         let mut result = Self {
             complete: true,
+            frontmatter: crate::properties::frontmatter(source)
+                .ok()
+                .flatten()
+                .map(|h| h.range),
             words: source.split_whitespace().count(),
             links: markdown::wiki_links(source),
             ..Self::default()
@@ -99,30 +104,14 @@ impl Prepared {
             } else {
                 markdown::inline(&text)
             };
-            if !matches!(kind, Kind::Code | Kind::Rule) {
-                let mut span_index = 0;
-                for (index, _) in display.match_indices('#') {
-                    while span_index < spans.len() && spans[span_index].range.end <= index {
-                        span_index += 1;
-                    }
-                    if index > 0
-                        && !display[..index]
-                            .ends_with(|c: char| c.is_whitespace() || "([{ ".contains(c))
-                    {
-                        continue;
-                    }
-                    if spans.get(span_index).is_some_and(|s| {
-                        s.range.contains(&index) && (s.style.code || s.style.target.is_some())
-                    }) {
-                        continue;
-                    }
-                    let tag: String = display[index + 1..]
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || "_-/".contains(*c))
-                        .collect();
-                    if !tag.is_empty() && !tag.chars().all(|c| c.is_numeric()) {
-                        tags.insert(tag);
-                    }
+            for span in &spans {
+                if let Some(tag) = span
+                    .style
+                    .target
+                    .as_deref()
+                    .and_then(|t| t.strip_prefix(markdown::TAG_TARGET_PREFIX))
+                {
+                    tags.insert(tag.to_owned());
                 }
             }
             // Also bound individual paragraphs and fenced code blocks: a single
@@ -161,6 +150,7 @@ impl Prepared {
                 });
             }
         }
+        tags.extend(crate::properties::tags(source));
         result.tags = tags.into_iter().collect();
         Some(result)
     }
@@ -263,7 +253,9 @@ mod tests {
             .iter()
             .filter(|r| {
                 matches!(r.kind, Kind::Paragraph)
-                    && r.spans.iter().any(|s| s.style.target.is_some())
+                    && r.spans
+                        .iter()
+                        .any(|s| s.style.target.as_deref() == Some("Target"))
             })
             .collect();
         assert!(chunks.len() > 1);
