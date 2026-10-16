@@ -158,6 +158,38 @@ contents separately when the original file conflicts.
   (YYYY-MM-DD), `{{time}}` (HH:MM), and `{{title}}` (current note name).
 - **Settings:** the rail settings icon or Ctrl comma controls text size, source
   line numbers, the default Source/Live Preview editing mode, and autosave.
+- **Tags:** click a `#tag` in Reading or in the connections panel; Ctrl-click it
+  in Source/Live Preview. Search `tag:work` or `#work` to filter saved notes,
+  including YAML tags and nested tags such as `work/research`. This filter takes
+  the whole query; combining tags with text queries is not supported yet.
+- **Properties:** use the note toolbar's Properties button or **Edit note
+  properties** in the command palette. Add, rename, or remove YAML fields, or
+  switch to the YAML editor for complex metadata. Apply is one undoable edit;
+  invalid metadata leaves the note intact. Unrelated fields, comments, and the
+  note body are preserved when editing supported field layouts.
+- **Attachments:** paste a clipboard image with Ctrl V, or drop images/PDFs onto
+  a note. Files are copied into the vault's `Attachments/` folder with unique
+  names, and relative Markdown links are inserted at the caret. Reading displays
+  standalone images; clicking an attachment opens the system viewer. Undo removes
+  the inserted link but keeps the imported file. Moving notes between folders or
+  moving attachment files currently requires updating these relative links.
+- **External changes:** clean notes refresh automatically. For an edited note,
+  **Compare versions** shows your text against disk, with an alternate view of
+  disk changes since opening. Keep editing, load the disk version (undoable), or
+  explicitly save your version over the reviewed disk contents. A second external
+  edit requires a fresh comparison. A deleted note can be restored from its open
+  copy. **Compare current note with disk** is also in the command palette.
+- **Unlinked mentions:** choose **Find unlinked mentions of current note** in the
+  palette. Review highlighted occurrences in saved notes, then click **Link** to
+  convert one into a wiki link. Existing links, code, and YAML are excluded.
+  Changed files and unsaved source tabs must be refreshed or saved first.
+- **Replace across notes:** Ctrl Shift H opens literal workspace search/replace.
+  Enter the search and replacement text, choose case sensitivity, and preview the
+  changes. Review each file's diff and select which files to apply. Changing the
+  query requires another preview. Selected files are checked before writing and
+  again individually at save time; an error stops the operation and reports how
+  many files were changed. This is not a multi-file transaction or a vault-wide
+  undo operation. Unsaved selected notes must be saved first.
 
 Right-click a file/folder and choose **Move to trash**, or press Delete with the
 explorer focused. Affected dirty tabs save first; conflicts block deletion. Entire
@@ -452,7 +484,7 @@ Before calling this ready for daily use, run the UI harness and then manually:
 ## Current boundaries
 
 The original Markdown parser supports common block and inline forms, but is not
-a complete CommonMark implementation. Tables, image rendering, nested list
+a complete CommonMark implementation. Tables, inline image layout, nested list
 layout, reference links, math, footnotes, and HTML are not implemented. Inline
 code and fenced code remain literal. Standard HTTP(S) and mail links open in the
 system browser on click; wiki links open local notes. Ambiguous bare note titles
@@ -508,7 +540,7 @@ Undo retains up to 200 edits within a 32 MiB changed-text budget, always retaini
 the latest edit even if it exceeds that budget. Durable save/conflict checks
 still complete synchronously before close or quit. There is
 no Obsidian plugin compatibility, graph view, sync,
-or attachment management yet. Templates use simple substitutions; there is no
+or attachment library management yet. Templates use simple substitutions; there is no
 scripting engine or custom date-format syntax.
 
 Read-only performance measurements for a vault:
@@ -677,6 +709,10 @@ describes these optimization settings and their build-time tradeoffs.
 - `crates/search`: persistent Tantivy index, ranking, typo correction and snippets.
 - `src/markdown.rs`: original parser and link/tag extraction.
 - `src/prepared.rs`: cached preview rows, formatting spans, tags, and word counts.
+- `src/properties.rs`: YAML frontmatter parsing and comment-preserving field edits.
+- `src/attachments.rs`: collision-safe imports and portable attachment links.
+- `src/changes.rs`: saved-note replacement plans and unlinked mentions.
+- `src/comparison.rs`: bounded-time diffs for external edits and replacement previews.
 - `src/editor.rs`: GPUI text rendering, hit testing, keyboard and IME bridge.
 - `src/workspace.rs`: desktop interface, tabs, dialogs, and vault refresh.
 

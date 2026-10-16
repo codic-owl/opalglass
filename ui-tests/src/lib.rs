@@ -14,6 +14,48 @@ mod editor {
         use gpui::{EntityInputHandler, Modifiers, TestAppContext, point, px};
 
         #[gpui::test]
+        fn control_click_follows_tags_in_source_and_live_preview_but_not_yaml_or_code(
+            cx: &mut TestAppContext,
+        ) {
+            use std::{cell::RefCell, rc::Rc};
+            let text = "---\n#metadata\n---\n\nLead\n\nA **bold** #work/research tag.\n\n`#literal`\n";
+            let (view, cx) = cx.add_window_view(|window, cx| {
+                let e = Editor::new(text, false, "", cx);
+                e.focus.focus(window);
+                e
+            });
+            let targets = Rc::new(RefCell::new(Vec::new()));
+            let observed = targets.clone();
+            let _subscription = cx.update(|_, cx| {
+                cx.subscribe(&view, move |_, event: &super::FollowLink, _| {
+                    observed.borrow_mut().push(event.0.clone())
+                })
+            });
+            for live in [false, true] {
+                view.update(cx, |e, cx| {
+                    e.set_live_preview(live, cx);
+                    e.jump_to(text.len(), cx);
+                });
+                cx.run_until_parked();
+                for needle in ["#metadata", "#literal", "#work/research"] {
+                    let position = view.read_with(cx, |e, _| {
+                        e.point_for(text.find(needle).unwrap() + 2)
+                            + point(px(0.), px(LINE / 2.))
+                    });
+                    cx.simulate_click(position, Modifiers {
+                        control: true,
+                        ..Default::default()
+                    });
+                }
+            }
+            assert_eq!(
+                *targets.borrow(),
+                vec!["opalglass-tag:work/research", "opalglass-tag:work/research"]
+            );
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), text));
+        }
+
+        #[gpui::test]
         fn list_and_formatting_keys_are_undoable_in_source_and_live_preview(cx: &mut TestAppContext) {
             let (view, cx) = cx.add_window_view(|w, cx| { let e = Editor::new("- [x] done", false, "", cx); e.focus.focus(w); e });
             cx.simulate_keystrokes("ctrl-end enter");
