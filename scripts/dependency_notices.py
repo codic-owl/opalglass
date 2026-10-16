@@ -31,6 +31,12 @@ for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version
             files.add(candidate)
     for pattern in ("LICENSE*", "LICENCE*", "COPYING*", "NOTICE*", "license*", "licence*"):
         files.update(p for p in directory.glob(pattern) if p.is_file())
+    # The Rust wrapper and its bundled native library have separate notices.
+    for relative in {"onig_sys": ["oniguruma/COPYING"]}.get(package["name"], []):
+        candidate = directory / relative
+        if not candidate.is_file():
+            raise RuntimeError(f"Missing bundled library notice: {candidate}")
+        files.add(candidate)
     sections.append(
         f"\n{'=' * 72}\n{package['name']} {package['version']}\n"
         f"License expression: {package.get('license') or 'See license files'}\n"

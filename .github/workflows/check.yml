@@ -1,15 +1,28 @@
 name: Build and test
 on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
 
 jobs:
-  linux:
-    runs-on: ubuntu-24.04
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Target defaults on every architecture; no host-specific CPU instructions.
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Linux build dependencies
+        if: runner.os == 'Linux'
         run: >-
           sudo apt-get update && sudo apt-get install -y
           clang cmake pkg-config libssl-dev libfontconfig1-dev libfreetype6-dev
@@ -22,4 +35,12 @@ jobs:
       - run: cargo build --release --locked
       - name: Native interface tests
         run: cargo test --manifest-path ui-tests/Cargo.toml
-
+      - name: Collect licenses and build native package
+        run: |
+          python scripts/dependency_notices.py
+          python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opalglass-${{ matrix.os }}
+          path: target/packages/*
+          if-no-files-found: error
