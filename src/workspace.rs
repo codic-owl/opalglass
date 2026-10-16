@@ -39,6 +39,7 @@ struct Tab {
     prepared_revision: u64,
     initial_frame_pending: bool,
     pending_heading: Option<String>,
+    pending_preview: Option<ListOffset>,
     link_style_revision: (u64, u64),
     requested_revision: u64,
     _prepare: Option<Task<()>>,
@@ -49,6 +50,7 @@ struct Tab {
     connections_scroll: UniformListScrollHandle,
     _subscription: Subscription,
     _scroll_subscription: Subscription,
+    _completion_subscription: Subscription,
 }
 impl Tab {
     fn cancel_opening_analysis(&mut self) {
@@ -90,6 +92,8 @@ enum Modal {
     NewFolder,
     Rename,
     Move,
+    Delete,
+    RestoreTrash,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
@@ -123,12 +127,59 @@ struct SearchRow {
     snippet: Option<Snippet>,
 }
 
+#[derive(Default)]
+struct LinkCompletion {
+    key: Option<(EntityId, u64, usize)>,
+    dismissed: Option<(EntityId, u64, usize)>,
+    range: std::ops::Range<usize>,
+    candidates: Vec<(PathBuf, String)>,
+    selected: usize,
+    generation: u64,
+    task: Option<Task<()>>,
+    cancelled: Arc<AtomicBool>,
+}
+struct NoteFind {
+    input: Entity<Editor>,
+    open: bool,
+    case_sensitive: bool,
+    key: Option<(EntityId, u64, String, bool)>,
+    matches: Arc<Vec<std::ops::Range<usize>>>,
+    selected: Option<usize>,
+    generation: u64,
+    task: Option<Task<()>>,
+    searching: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PickerMode {
+    Commands,
+    Bookmarks,
+    Templates,
+}
+#[derive(Clone)]
+enum PickerAction {
+    Command(opalglass::commands::Command),
+    Note(PathBuf),
+    Template(PathBuf),
+}
+#[derive(Clone)]
+struct PickerItem {
+    title: String,
+    detail: String,
+    action: PickerAction,
+}
 pub struct Workspace {
     vault: Option<Vault>,
     tabs: Vec<Tab>,
+    history_back: Vec<navigation::SessionTab>,
+    history_forward: Vec<navigation::SessionTab>,
+    history_restore: Option<navigation::SessionTab>,
+    history_request: bool,
     active: usize,
     focus: FocusHandle,
     search: Entity<Editor>,
+    find: NoteFind,
+    completion: LinkCompletion,
     input: Entity<Editor>,
     modal: Modal,
     inline_parent: Option<PathBuf>,
@@ -144,12 +195,24 @@ pub struct Workspace {
     tab_drop: Option<usize>,
     tabs_scroll: ScrollHandle,
     mode: ViewMode,
+    preferences: opalglass::state::Preferences,
+    settings_open: bool,
+    picker: Option<PickerMode>,
+    picker_query: Option<String>,
+    picker_selected: usize,
+    picker_items: Vec<PickerItem>,
+    picker_scroll: UniformListScrollHandle,
+    outline_open: bool,
+    outline_scroll: UniformListScrollHandle,
     sidebar: Entity<Sidebar>,
     preview_pane: Entity<PreviewPane>,
     preview_revision: Option<(EntityId, u64, u64, bool)>,
     connections: Entity<Connections>,
     connections_revision: Option<(EntityId, u64, u64, bool, bool)>,
+    #[cfg(debug_assertions)]
     performance: Entity<PerformanceBar>,
+    indexing_bar: Entity<IndexingBar>,
+    _index_progress: Option<Task<()>>,
     status: String,
     error: bool,
     revision: u64,
@@ -198,6 +261,11 @@ pub struct Workspace {
     note_generation: u64,
     _note_load: Option<Task<()>>,
     note_loading: bool,
+    _restore: Option<Task<()>>,
+    checkpointing: bool,
+    checkpoints: std::collections::HashMap<EntityId, (u64, bool, PathBuf)>,
+    _checkpoint: Option<Task<()>>,
+    restoring: bool,
     _subscriptions: Vec<Subscription>,
     _watch: Task<()>,
 }
@@ -228,6 +296,13 @@ fn caption(text: impl Into<SharedString>) -> Div {
 
 #[derive(Clone, Copy)]
 enum ToolbarIcon {
+    Commands,
+    Bookmark,
+    Calendar,
+    Back,
+    Forward,
+    Settings,
+    Outline,
     Locked,
     Unlocked,
     Source,
@@ -266,6 +341,46 @@ fn icon_button(id: &'static str, icon: ToolbarIcon, label: String, enabled: bool
                 move |bounds, _, window, _| {
                     // Small native vector icons, using a consistent 24-unit grid.
                     let lines: &[&[(f32, f32)]] = match icon {
+                        ToolbarIcon::Commands => &[
+                            &[(4., 6.), (10., 12.), (4., 18.)],
+                            &[(13., 18.), (21., 18.)],
+                        ],
+                        ToolbarIcon::Bookmark => &[&[
+                            (6., 3.),
+                            (18., 3.),
+                            (18., 21.),
+                            (12., 16.),
+                            (6., 21.),
+                            (6., 3.),
+                        ]],
+                        ToolbarIcon::Calendar => &[
+                            &[(3., 5.), (21., 5.), (21., 21.), (3., 21.), (3., 5.)],
+                            &[(3., 10.), (21., 10.)],
+                            &[(8., 2.), (8., 7.)],
+                            &[(16., 2.), (16., 7.)],
+                        ],
+                        ToolbarIcon::Back => &[
+                            &[(14., 5.), (7., 12.), (14., 19.)],
+                            &[(7., 12.), (21., 12.)],
+                        ],
+                        ToolbarIcon::Forward => &[
+                            &[(10., 5.), (17., 12.), (10., 19.)],
+                            &[(3., 12.), (17., 12.)],
+                        ],
+                        ToolbarIcon::Settings => &[
+                            &[(4., 6.), (20., 6.)],
+                            &[(4., 12.), (20., 12.)],
+                            &[(4., 18.), (20., 18.)],
+                            &[(8., 3.), (8., 9.)],
+                            &[(16., 9.), (16., 15.)],
+                            &[(10., 15.), (10., 21.)],
+                        ],
+                        ToolbarIcon::Outline => &[
+                            &[(3., 5.), (21., 5.)],
+                            &[(8., 10.), (21., 10.)],
+                            &[(8., 15.), (21., 15.)],
+                            &[(3., 20.), (21., 20.)],
+                        ],
                         ToolbarIcon::Locked => &[
                             &[(5., 10.), (19., 10.), (19., 21.), (5., 21.), (5., 10.)],
                             &[
@@ -418,8 +533,18 @@ fn external_link(target: &str) -> bool {
 
 impl Workspace {
     pub fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state_directory = if cfg!(test) {
+            None
+        } else {
+            navigation::state_directory()
+        };
+        let preferences = state_directory
+            .as_deref()
+            .map(opalglass::state::Preferences::load)
+            .unwrap_or_default();
         let search = cx.new(|cx| Editor::new("", true, "Search notes…", cx));
         let input = cx.new(|cx| Editor::new("", true, "", cx));
+        let find_input = cx.new(|cx| Editor::new("", true, "Find in note…", cx));
         let owner = cx.entity().downgrade();
         let sidebar = cx.new(|_| Sidebar {
             #[cfg(test)]
@@ -445,6 +570,7 @@ impl Workspace {
         let subscriptions = vec![
             cx.observe(&search, |_, _, cx| cx.notify()),
             cx.observe(&input, |_, _, cx| cx.notify()),
+            cx.observe(&find_input, |_, _, cx| cx.notify()),
             cx.observe(&cx.entity(), |this, _, cx| {
                 // Invalidate cached children before GPUI starts the next frame.
                 this.update_indexing(cx);
@@ -459,7 +585,8 @@ impl Workspace {
                 cx.background_executor().timer(Duration::from_secs(3)).await;
                 let Ok(scan) = this.update(cx, |this, cx| {
                     this.persist_navigation(cx);
-                    (!this.managing && !this.loading && !this.indexing)
+                    this.checkpoint(cx);
+                    (!this.managing && !this.loading && !this.indexing && !this.checkpointing)
                         .then(|| this.vault.as_ref().map(|v| (v.clone(), this.revision)))
                         .flatten()
                 }) else {
@@ -496,9 +623,25 @@ impl Workspace {
         let mut workspace = Self {
             vault: None,
             tabs: Vec::new(),
+            history_back: Vec::new(),
+            history_forward: Vec::new(),
+            history_restore: None,
+            history_request: false,
             active: 0,
             focus: cx.focus_handle(),
             search,
+            completion: LinkCompletion::default(),
+            find: NoteFind {
+                input: find_input,
+                open: false,
+                case_sensitive: false,
+                key: None,
+                matches: Arc::new(Vec::new()),
+                selected: None,
+                generation: 0,
+                task: None,
+                searching: false,
+            },
             input,
             modal: Modal::None,
             inline_parent: None,
@@ -514,12 +657,24 @@ impl Workspace {
             tab_drop: None,
             tabs_scroll: ScrollHandle::new(),
             mode: ViewMode::Split,
+            preferences: preferences.clone(),
+            settings_open: false,
+            picker: None,
+            picker_query: None,
+            picker_selected: 0,
+            picker_items: Vec::new(),
+            picker_scroll: UniformListScrollHandle::new(),
+            outline_open: false,
+            outline_scroll: UniformListScrollHandle::new(),
             sidebar,
             preview_pane,
             preview_revision: None,
             connections,
             connections_revision: None,
+            #[cfg(debug_assertions)]
             performance: cx.new(|_| PerformanceBar::default()),
+            indexing_bar: cx.new(|_| IndexingBar::default()),
+            _index_progress: None,
             status: "Your notes, on your disk.".into(),
             error: false,
             revision: 0,
@@ -555,16 +710,12 @@ impl Workspace {
             resizing_sidebar: false,
             split_ratio: 0.5,
             scroll_locked: false,
-            live_preview: false,
+            live_preview: preferences.default_live_preview,
             split_bounds: Rc::new(Cell::new(Bounds::default())),
             split_drag_offset: None,
             typeahead: String::new(),
             typeahead_at: std::time::Instant::now(),
-            state_directory: if cfg!(test) {
-                None
-            } else {
-                navigation::state_directory()
-            },
+            state_directory,
             persisted_navigation: None,
             modal_target: None,
             managing: false,
@@ -572,17 +723,981 @@ impl Workspace {
             note_generation: 0,
             _note_load: None,
             note_loading: false,
+            _restore: None,
+            checkpointing: false,
+            checkpoints: Default::default(),
+            _checkpoint: None,
+            restoring: false,
             _subscriptions: subscriptions,
             _watch: watch,
         };
         workspace.focus.focus(window);
+        let path = path.or_else(|| {
+            workspace
+                .state_directory
+                .as_ref()
+                .and_then(|dir| opalglass::state::last_vault(dir))
+        });
         if let Some(path) = path {
             workspace.open_vault(path, window, cx);
         }
         workspace
     }
+    fn show_picker(&mut self, mode: PickerMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managing || self.loading {
+            return;
+        }
+        if mode != PickerMode::Commands && self.vault.is_none() {
+            return;
+        }
+        if mode == PickerMode::Templates && self.tabs.is_empty() {
+            return;
+        }
+        self.dismiss(window, cx);
+        self.settings_open = false;
+        self.close_completion(cx);
+        self.picker = Some(mode);
+        self.picker_query = None;
+        self.picker_selected = 0;
+        self.input.update(cx, |e, cx| e.set_text("", cx));
+        self.input.read(cx).focus.focus(window);
+        cx.notify();
+    }
+    fn update_picker(&mut self, cx: &App) {
+        let Some(mode) = self.picker else {
+            return;
+        };
+        let query = self.input.read(cx).buffer.text().trim().to_lowercase();
+        if self.picker_query.as_ref() == Some(&query) {
+            return;
+        }
+        let matches = |label: &str| {
+            let label = label.to_lowercase();
+            query.split_whitespace().all(|word| label.contains(word))
+        };
+        self.picker_items = match mode {
+            PickerMode::Commands => opalglass::commands::Command::ALL
+                .iter()
+                .filter(|(command, label, _)| {
+                    command.available(self.vault.is_some(), !self.tabs.is_empty()) && matches(label)
+                })
+                .map(|(command, label, shortcut)| PickerItem {
+                    title: (*label).into(),
+                    detail: (*shortcut).into(),
+                    action: PickerAction::Command(*command),
+                })
+                .collect(),
+            PickerMode::Bookmarks => self
+                .navigation
+                .bookmarks
+                .iter()
+                .filter(|p| {
+                    self.vault.as_ref().is_some_and(|v| v.contains_path(p))
+                        && matches(&p.to_string_lossy())
+                })
+                .map(|p| PickerItem {
+                    title: p.file_stem().unwrap_or_default().to_string_lossy().into(),
+                    detail: p.display().to_string(),
+                    action: PickerAction::Note(p.clone()),
+                })
+                .collect(),
+            PickerMode::Templates => self
+                .vault
+                .as_ref()
+                .into_iter()
+                .flat_map(|v| v.notes.iter())
+                .filter(|n| n.path.starts_with("Templates") && matches(&n.path.to_string_lossy()))
+                .map(|n| PickerItem {
+                    title: n.title.clone(),
+                    detail: n.path.display().to_string(),
+                    action: PickerAction::Template(n.path.clone()),
+                })
+                .collect(),
+        };
+        self.picker_selected = 0;
+        self.picker_query = Some(query);
+        self.picker_scroll.scroll_to_item(0, ScrollStrategy::Top);
+    }
+    fn accept_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.picker_items.get(self.picker_selected).cloned() else {
+            return;
+        };
+        self.picker = None;
+        self.focus_document(window, cx);
+        match item.action {
+            PickerAction::Command(command) => self.execute_command(command, window, cx),
+            PickerAction::Note(path) => self.open_note(path, window, cx),
+            PickerAction::Template(path) => self.insert_template(path, cx),
+        }
+        cx.notify();
+    }
+    fn picker_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mode = self.picker.unwrap();
+        let (title, empty) = match mode {
+            PickerMode::Commands => ("Command palette", "No matching commands"),
+            PickerMode::Bookmarks => ("Bookmarks", "Bookmark a note with Ctrl Shift D"),
+            PickerMode::Templates => (
+                "Insert template",
+                "Create Markdown templates in the Templates folder",
+            ),
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x05070bb0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(560.))
+                    .p_4()
+                    .rounded_lg()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(div().text_lg().child(title))
+                    .child(
+                        div()
+                            .h(px(40.))
+                            .border_1()
+                            .border_color(rgb(ACCENT))
+                            .rounded_md()
+                            .bg(rgb(BG))
+                            .child(self.input.clone()),
+                    )
+                    .when(self.picker_items.is_empty(), |el| el.child(caption(empty)))
+                    .child(
+                        uniform_list(
+                            "quick-picker",
+                            self.picker_items.len(),
+                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                range
+                                    .map(|index| {
+                                        let item = &this.picker_items[index];
+                                        div()
+                                            .id(("picker-option", index))
+                                            .w_full()
+                                            .debug_selector(move || {
+                                                format!("picker-option-{index}")
+                                            })
+                                            .h(px(46.))
+                                            .px_3()
+                                            .rounded_md()
+                                            .flex()
+                                            .flex_col()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .when(index == this.picker_selected, |el| {
+                                                el.bg(rgb(0x303749))
+                                            })
+                                            .hover(|s| s.bg(rgb(0x303749)))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .truncate()
+                                                    .child(item.title.clone()),
+                                            )
+                                            .child(caption(item.detail.clone()).truncate())
+                                            .on_click(cx.listener(move |this, _, w, cx| {
+                                                this.picker_selected = index;
+                                                this.accept_picker(w, cx);
+                                            }))
+                                    })
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .h(px((self.picker_items.len().clamp(1, 8) * 46) as f32))
+                        .track_scroll(self.picker_scroll.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(caption("↑ ↓ to choose · Enter to open · Escape to close"))
+                            .child(button("picker-close", "Close").on_click(cx.listener(
+                                |this, _, w, cx| {
+                                    this.picker = None;
+                                    this.focus_document(w, cx);
+                                    cx.notify();
+                                },
+                            ))),
+                    ),
+            )
+            .into_any_element()
+    }
+    fn toggle_bookmark(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tabs.get(self.active).map(|t| t.path.clone()) else {
+            return;
+        };
+        if self.navigation.bookmarks.contains(&path) {
+            self.navigation.bookmarks.retain(|p| p != &path);
+            self.message("Bookmark removed", false, cx);
+        } else {
+            self.navigation.bookmarks.push(path);
+            self.message("Note bookmarked", false, cx);
+        }
+        self.persist_navigation(cx);
+    }
+    fn execute_command(
+        &mut self,
+        command: opalglass::commands::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use opalglass::commands::Command as C;
+        match command {
+            C::OpenVault => self.pick_vault(window, cx),
+            C::NewNote => self.show_inline(Modal::New, window, cx),
+            C::NewFolder => self.show_inline(Modal::NewFolder, window, cx),
+            C::Save => {
+                self.save_tab(self.active, cx);
+            }
+            C::Find => self.open_find(window, cx),
+            C::Search => {
+                self.navigation.hidden = false;
+                self.search.update(cx, |e, cx| {
+                    e.buffer.select(0, e.buffer.text().len());
+                    cx.notify();
+                });
+                self.search.read(cx).focus.focus(window);
+            }
+            C::Source => self.set_mode(ViewMode::Source, window, cx),
+            C::Split => self.set_mode(ViewMode::Split, window, cx),
+            C::Reading => self.set_mode(ViewMode::Preview, window, cx),
+            C::LivePreview => self.toggle_live_preview(window, cx),
+            C::Outline => {
+                self.outline_open = !self.outline_open;
+            }
+            C::Settings => {
+                self.settings_open = true;
+                self.focus.focus(window);
+            }
+            C::Back => self.visit_history(false, window, cx),
+            C::Forward => self.visit_history(true, window, cx),
+            C::Bookmark => self.toggle_bookmark(cx),
+            C::Bookmarks => self.show_picker(PickerMode::Bookmarks, window, cx),
+            C::DailyNote => self.open_daily_note(window, cx),
+            C::Template => self.show_picker(PickerMode::Templates, window, cx),
+            C::Trash => {
+                self.navigation.selected = self.tabs.get(self.active).map(|t| t.path.clone());
+                self.show_modal(Modal::Delete, window, cx);
+            }
+            C::RestoreTrash => self.change_trash(None, window, cx),
+            C::Bold | C::Italic | C::Code | C::Task => {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    tab.editor.update(cx, |e, cx| {
+                        match command {
+                            C::Bold => opalglass::editing::wrap(&mut e.buffer, "**"),
+                            C::Italic => opalglass::editing::wrap(&mut e.buffer, "*"),
+                            C::Code => opalglass::editing::wrap(&mut e.buffer, "`"),
+                            _ => opalglass::editing::toggle_task(&mut e.buffer),
+                        }
+                        e.reveal_cursor(cx);
+                    });
+                }
+            }
+        }
+        cx.notify();
+    }
+    fn open_daily_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managing || self.checkpointing {
+            return;
+        }
+        let Some(mut vault) = self.vault.clone() else {
+            return;
+        };
+        self.managing = true;
+        self.cancel_indexing();
+        self.note_generation += 1;
+        self._note_load = None;
+        self.note_loading = false;
+        self.revision += 1;
+        self.focus.focus(window);
+        self.message("Opening today's note…", false, cx);
+        self._management = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut values = opalglass::commands::TemplateValues::now(String::new())?;
+                    values.title = values.date.clone();
+                    let path = opalglass::commands::daily_note(&mut vault, &values)?;
+                    Ok::<_, std::io::Error>((vault, path))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, w, cx| {
+                this.managing = false;
+                match result {
+                    Ok((vault, path)) => {
+                        this.vault = Some(vault);
+                        this.revision += 1;
+                        this.open_note(path, w, cx);
+                    }
+                    Err(error) => {
+                        this.focus_document(w, cx);
+                        this.message(format!("Could not open daily note: {error}"), true, cx);
+                    }
+                }
+            });
+        }));
+    }
+    fn insert_template(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.clone() else {
+            return;
+        };
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let editor = tab.editor.clone();
+        let revision = editor.read(cx).buffer.revision();
+        let range = editor.read(cx).buffer.selection();
+        let title = tab
+            .path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let template = vault.read(&path)?;
+                    let values = opalglass::commands::TemplateValues::now(title)?;
+                    Ok::<_, std::io::Error>(opalglass::document::normalize(
+                        &opalglass::commands::render_template(&template, &values),
+                    ))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .tabs
+                    .get(this.active)
+                    .is_none_or(|t| t.editor != editor)
+                    || editor.read(cx).buffer.revision() != revision
+                    || editor.read(cx).buffer.selection() != range
+                {
+                    this.message(
+                        "The insertion point changed. Choose the template again.",
+                        false,
+                        cx,
+                    );
+                    return;
+                }
+                match result {
+                    Ok(text) => {
+                        editor.update(cx, |e, cx| {
+                            e.buffer.replace(range, &text);
+                            e.reveal_cursor(cx);
+                        });
+                        this.message("Template inserted", false, cx);
+                    }
+                    Err(error) => {
+                        this.message(format!("Could not insert template: {error}"), true, cx)
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+    fn close_completion(&mut self, cx: &mut Context<Self>) {
+        self.completion.candidates.clear();
+        self.completion.key = None;
+        self.completion.generation += 1;
+        self.completion.task = None;
+        self.completion.cancelled.store(true, Ordering::Relaxed);
+        for tab in &self.tabs {
+            tab.editor.update(cx, |e, _| e.completion_visible = false);
+        }
+        cx.notify();
+    }
+    fn update_completion(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let context = self
+            .tabs
+            .get(self.active)
+            .filter(|t| t.editor.read(cx).focus.is_focused(window))
+            .filter(|_| {
+                self.modal == Modal::None
+                    && !self.settings_open
+                    && !self.managing
+                    && self.mode != ViewMode::Preview
+            })
+            .and_then(|t| {
+                t.editor
+                    .read(cx)
+                    .link_query()
+                    .map(|(range, query)| (t.editor.clone(), t.path.clone(), range, query))
+            });
+        let Some((editor, from, range, query)) = context else {
+            if self.completion.key.is_some() {
+                self.close_completion(cx);
+            }
+            return;
+        };
+        let key = (
+            editor.entity_id(),
+            editor.read(cx).buffer.revision(),
+            editor.read(cx).buffer.cursor(),
+        );
+        if self.completion.key == Some(key) || self.completion.dismissed == Some(key) {
+            return;
+        }
+        self.close_completion(cx);
+        self.completion.key = Some(key);
+        self.completion.range = range;
+        let generation = self.completion.generation;
+        self.completion.cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = self.completion.cancelled.clone();
+        let Some(vault) = self.vault.clone() else {
+            return;
+        };
+        let engine = self.search_engine.clone();
+        self.completion.task = Some(cx.spawn(async move |this, cx| {
+            let candidates = cx
+                .background_executor()
+                .spawn(async move {
+                    let q = query.to_lowercase();
+                    let mut candidates = Vec::new();
+                    if !q.is_empty()
+                        && let Some(engine) = engine
+                        && let Ok(results) =
+                            engine.search(&query, &Ticket::from_cancelled(cancelled.clone()))
+                    {
+                        candidates.extend(
+                            results
+                                .hits
+                                .into_iter()
+                                .filter(|h| h.tier.contains("title"))
+                                .map(|h| (PathBuf::from(h.path), h.title)),
+                        );
+                    }
+                    let mut fallback = vault
+                        .notes
+                        .iter()
+                        .filter_map(|n| {
+                            if n.path == from {
+                                return None;
+                            }
+                            let title = n.title.to_lowercase();
+                            let path = n.path.to_string_lossy().to_lowercase();
+                            (title.contains(&q) || path.contains(&q)).then_some((
+                                !title.starts_with(&q),
+                                title,
+                                n.path.clone(),
+                                n.title.clone(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    fallback.sort();
+                    for (_, _, path, title) in fallback {
+                        if candidates.len() >= 10 {
+                            break;
+                        }
+                        if !candidates.iter().any(|(p, _)| *p == path) {
+                            candidates.push((path, title));
+                        }
+                    }
+                    candidates.retain(|(p, _)| *p != from && vault.contains_path(p));
+                    candidates.truncate(10);
+                    candidates
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.completion.generation != generation || this.completion.key != Some(key) {
+                    return;
+                }
+                editor.update(cx, |e, _| e.completion_visible = !candidates.is_empty());
+                this.completion.candidates = candidates;
+                this.completion.selected = 0;
+                cx.notify();
+            });
+        }));
+    }
+    fn accept_completion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, title)) = self
+            .completion
+            .candidates
+            .get(self.completion.selected)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if self.completion.key
+            != Some((
+                tab.editor.entity_id(),
+                tab.editor.read(cx).buffer.revision(),
+                tab.editor.read(cx).buffer.cursor(),
+            ))
+        {
+            return;
+        }
+        let Some(vault) = &self.vault else {
+            return;
+        };
+        let target = if vault.resolve(&tab.path, &title).as_ref() == Some(&path) {
+            title
+        } else {
+            format!(
+                "/{}",
+                path.with_extension("").to_string_lossy().replace('\\', "/")
+            )
+        };
+        let range = self.completion.range.clone();
+        tab.editor.update(cx, |e, cx| {
+            e.buffer.replace(range, &format!("[[{target}]]"));
+            e.jump_to(e.buffer.cursor(), cx);
+            e.focus.focus(window);
+        });
+        self.close_completion(cx);
+    }
+    fn completion_menu(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let tab = &self.tabs[self.active];
+        let point = tab.editor.read(cx).caret_position();
+        let size = window.viewport_size();
+        let height = self.completion.candidates.len() as f32 * 42. + 8.;
+        let top = if f32::from(point.y) + 30. + height < f32::from(size.height) {
+            f32::from(point.y) + 30.
+        } else {
+            (f32::from(point.y) - height).max(0.)
+        };
+        div()
+            .id("link-completion")
+            .debug_selector(|| "link-completion".into())
+            .absolute()
+            .left(px(
+                f32::from(point.x).clamp(0., (f32::from(size.width) - 340.).max(0.))
+            ))
+            .top(px(top))
+            .w(px(340.))
+            .py_1()
+            .rounded_md()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(LINE))
+            .shadow_lg()
+            .occlude()
+            .children(
+                self.completion
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (path, title))| {
+                        div()
+                            .id(("link-option", i))
+                            .debug_selector(move || format!("link-option-{i}"))
+                            .h(px(42.))
+                            .px_3()
+                            .cursor_pointer()
+                            .when(i == self.completion.selected, |el| el.bg(rgb(0x303749)))
+                            .hover(|s| s.bg(rgb(0x303749)))
+                            .child(div().text_sm().truncate().child(title.clone()))
+                            .child(caption(path.display().to_string()).truncate())
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.completion.selected = i;
+                                this.accept_completion(w, cx);
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+    fn apply_preferences(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.editor.update(cx, |e, cx| {
+                e.set_preferences(
+                    self.preferences.font_size,
+                    self.preferences.line_numbers,
+                    cx,
+                )
+            });
+        }
+        self.preview_pane.update(cx, |_, cx| cx.notify());
+        if let Some(directory) = &self.state_directory
+            && let Err(error) = self.preferences.save(directory)
+        {
+            self.message(format!("Could not save settings: {error}"), true, cx);
+        }
+        cx.notify();
+    }
+    fn settings_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x05070bb0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(460.))
+                    .p_6()
+                    .rounded_lg()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(div().text_xl().child("Settings"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child("Text size")
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        button("font-smaller", "−")
+                                            .debug_selector(|| "font-smaller".into())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.preferences.font_size =
+                                                    (this.preferences.font_size - 1.).max(10.);
+                                                this.apply_preferences(cx);
+                                            })),
+                                    )
+                                    .child(format!("{} px", self.preferences.font_size as u32))
+                                    .child(
+                                        button("font-larger", "+")
+                                            .debug_selector(|| "font-larger".into())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.preferences.font_size =
+                                                    (this.preferences.font_size + 1.).min(28.);
+                                                this.apply_preferences(cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        button(
+                            "setting-line-numbers",
+                            if self.preferences.line_numbers {
+                                "Line numbers: On"
+                            } else {
+                                "Line numbers: Off"
+                            },
+                        )
+                        .debug_selector(|| "setting-line-numbers".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.preferences.line_numbers = !this.preferences.line_numbers;
+                            this.apply_preferences(cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            "setting-default-editor",
+                            if self.preferences.default_live_preview {
+                                "Default editing mode: Live Preview"
+                            } else {
+                                "Default editing mode: Source"
+                            },
+                        )
+                        .debug_selector(|| "setting-default-editor".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.preferences.default_live_preview =
+                                !this.preferences.default_live_preview;
+                            this.apply_preferences(cx);
+                        })),
+                    )
+                    .child(caption(
+                        "Default editing mode applies when opening a workspace.",
+                    ))
+                    .child(
+                        button(
+                            "setting-autosave",
+                            if self.preferences.autosave {
+                                "Autosave: On"
+                            } else {
+                                "Autosave: Off"
+                            },
+                        )
+                        .debug_selector(|| "setting-autosave".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.preferences.autosave = !this.preferences.autosave;
+                            this.apply_preferences(cx);
+                        })),
+                    )
+                    .child(
+                        button("settings-close", "Done")
+                            .debug_selector(|| "settings-close".into())
+                            .on_click(cx.listener(|this, _, w, cx| {
+                                this.settings_open = false;
+                                this.focus_document(w, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+    fn outline(&self, cx: &mut Context<Self>) -> AnyElement {
+        let count = self
+            .tabs
+            .get(self.active)
+            .map_or(0, |t| t.prepared.headings.len());
+        div()
+            .debug_selector(|| "heading-outline".into())
+            .w(px(220.))
+            .h_full()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(rgb(LINE))
+            .flex()
+            .flex_col()
+            .child(div().p_3().child(caption("OUTLINE")))
+            .when(count == 0, |el| {
+                el.child(div().p_3().child(caption("No headings in this note")))
+            })
+            .child(
+                uniform_list(
+                    "outline-list",
+                    count,
+                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        range
+                            .map(|index| {
+                                let tab = &this.tabs[this.active];
+                                let (title, row) = &tab.prepared.headings[index];
+                                let level =
+                                    if let Kind::Heading(level) = tab.prepared.rows[*row].kind {
+                                        level
+                                    } else {
+                                        1
+                                    };
+                                div()
+                                    .id(("outline-heading", index))
+                                    .debug_selector(move || format!("outline-heading-{index}"))
+                                    .h(px(32.))
+                                    .pl(px(12. + (level - 1) as f32 * 12.))
+                                    .pr_2()
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgb(0x303749)))
+                                    .child(div().truncate().child(title.clone()))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let Some(tab) = this.tabs.get(this.active) else {
+                                            return;
+                                        };
+                                        let row = tab.prepared.headings[index].1;
+                                        let byte = tab.prepared.rows[row].source.start;
+                                        tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
+                                        tab.preview_scroll.scroll_to(ListOffset {
+                                            item_ix: row,
+                                            offset_in_item: px(0.),
+                                        });
+                                        this.preview_pane.update(cx, |_, cx| cx.notify());
+                                        this.focus_document(window, cx);
+                                    }))
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(self.outline_scroll.clone())
+                .flex_1()
+                .min_h_0(),
+            )
+            .into_any_element()
+    }
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let selected = tab.editor.read(cx).buffer.selected().to_owned();
+        self.find.open = true;
+        self.find.input.update(cx, |input, cx| {
+            if !selected.is_empty() && !selected.contains('\n') {
+                input.set_text(&selected, cx);
+            }
+            input.buffer.select(0, input.buffer.text().len());
+            input.focus.focus(window);
+            cx.notify();
+        });
+        cx.notify();
+    }
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find.open = false;
+        self.find.generation += 1;
+        self.find.task = None;
+        self.find.key = None;
+        self.find.matches = Arc::new(Vec::new());
+        for tab in &self.tabs {
+            tab.editor
+                .update(cx, |e, cx| e.set_find_matches(Arc::new(Vec::new()), cx));
+        }
+        self.preview_pane.update(cx, |_, cx| cx.notify());
+        self.focus_document(window, cx);
+        cx.notify();
+    }
+    fn update_find(&mut self, cx: &mut Context<Self>) {
+        if !self.find.open {
+            return;
+        }
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let editor = tab.editor.clone();
+        let query = self.find.input.read(cx).buffer.text().to_owned();
+        let key = (
+            editor.entity_id(),
+            editor.read(cx).buffer.revision(),
+            query.clone(),
+            self.find.case_sensitive,
+        );
+        if self.find.key.as_ref() == Some(&key) {
+            return;
+        }
+        self.find.key = Some(key);
+        self.find.generation += 1;
+        let generation = self.find.generation;
+        let text = editor.read(cx).buffer.snapshot();
+        let case_sensitive = self.find.case_sensitive;
+        self.find.selected = None;
+        self.find.matches = Arc::new(Vec::new());
+        self.find.searching = !query.is_empty();
+        editor.update(cx, |e, cx| e.set_find_matches(Arc::new(Vec::new()), cx));
+        self.preview_pane.update(cx, |_, cx| cx.notify());
+        self.find.task = Some(cx.spawn(async move |this, cx| {
+            let matches =
+                cx.background_executor()
+                    .spawn(async move {
+                        Arc::new(opalglass::editing::find(&text, &query, case_sensitive))
+                    })
+                    .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.find.generation != generation {
+                    return;
+                }
+                this.find.searching = false;
+                let cursor = editor.read(cx).buffer.cursor();
+                let first = matches.partition_point(|r| r.end <= cursor);
+                this.find.selected =
+                    (!matches.is_empty()).then_some(if first == matches.len() { 0 } else { first });
+                editor.update(cx, |e, cx| e.set_find_matches(matches.clone(), cx));
+                this.find.matches = matches;
+                this.reveal_find(cx);
+                this.preview_pane.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            });
+        }));
+    }
+    fn reveal_find(&mut self, cx: &mut Context<Self>) {
+        let Some(range) = self
+            .find
+            .selected
+            .and_then(|i| self.find.matches.get(i))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        tab.editor
+            .update(cx, |e, cx| e.select_match(range.clone(), cx));
+        let row = tab
+            .prepared
+            .rows
+            .partition_point(|r| r.source.start <= range.start)
+            .saturating_sub(1);
+        tab.preview_scroll.scroll_to(ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.),
+        });
+        self.preview_pane.update(cx, |_, cx| cx.notify());
+    }
+    fn next_find(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        let count = self.find.matches.len();
+        if count == 0 {
+            return;
+        }
+        let selected = self.find.selected.unwrap_or(0);
+        self.find.selected = Some((selected + if backwards { count - 1 } else { 1 }) % count);
+        self.reveal_find(cx);
+        cx.notify();
+    }
+    fn find_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .debug_selector(|| "note-find".into())
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(LINE))
+            .flex_shrink_0()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(32.))
+                    .child(self.find.input.clone()),
+            )
+            .child(caption(if self.find.searching {
+                "Searching…".into()
+            } else {
+                format!(
+                    "{} / {}",
+                    self.find.selected.map_or(0, |i| i + 1),
+                    self.find.matches.len()
+                )
+            }))
+            .child(
+                button("find-case", "Aa")
+                    .tooltip({
+                        let sensitive = self.find.case_sensitive;
+                        move |_, cx| {
+                            cx.new(|_| {
+                                PathTooltip(format!(
+                                    "Match case · {}",
+                                    if sensitive { "On" } else { "Off" }
+                                ))
+                            })
+                            .into()
+                        }
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.find.case_sensitive = !this.find.case_sensitive;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button("find-previous", "↑")
+                    .debug_selector(|| "find-previous".into())
+                    .tooltip(|_, cx| {
+                        cx.new(|_| PathTooltip("Previous match · Shift Enter".into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.next_find(true, cx))),
+            )
+            .child(
+                button("find-next", "↓")
+                    .debug_selector(|| "find-next".into())
+                    .tooltip(|_, cx| cx.new(|_| PathTooltip("Next match · Enter".into())).into())
+                    .on_click(cx.listener(|this, _, _, cx| this.next_find(false, cx))),
+            )
+            .child(
+                button("find-close", "×")
+                    .debug_selector(|| "find-close".into())
+                    .on_click(cx.listener(|this, _, w, cx| this.close_find(w, cx))),
+            )
+            .into_any_element()
+    }
     fn apply_scan(&mut self, vault: Vault, revision: u64, cx: &mut Context<Self>) {
         if self.managing
+            || self.checkpointing
             || self.revision != revision
             || self.vault.as_ref().is_none_or(|v| v.root != vault.root)
         {
@@ -591,7 +1706,7 @@ impl Workspace {
         let mut reload = Vec::new();
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             match vault.notes.iter().find(|n| n.path == tab.path) {
-                Some(note) if note.text != tab.baseline => {
+                Some(note) if !note.matches_text(&tab.baseline) => {
                     if !tab.dirty(cx) {
                         reload.push(index);
                     } else {
@@ -627,6 +1742,7 @@ impl Workspace {
         started: Instant,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(debug_assertions)]
         self.log_performance_phases(
             action,
             target,
@@ -634,6 +1750,8 @@ impl Workspace {
             vec![("Action", started.elapsed())],
             cx,
         );
+        #[cfg(not(debug_assertions))]
+        let _ = (action, target, started, cx);
     }
     fn log_performance_phases(
         &self,
@@ -643,6 +1761,7 @@ impl Workspace {
         phases: Vec<(&'static str, Duration)>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(debug_assertions)]
         self.performance.update(cx, |bar, cx| {
             bar.pending.push(PendingPerformance {
                 action,
@@ -654,6 +1773,8 @@ impl Workspace {
             });
             cx.notify();
         });
+        #[cfg(not(debug_assertions))]
+        let _ = (action, target, started, phases, cx);
     }
     fn open_vault(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let started = Instant::now();
@@ -730,6 +1851,8 @@ impl Workspace {
                     .find(|n| n.title == "Welcome")
                     .or_else(|| vault.notes.first())
                     .map(|n| n.path.clone());
+                self._restore = None;
+                self.restoring = false;
                 self.navigation = state;
                 self.auto_revealed = None;
                 self.persisted_navigation = Some(self.navigation.clone());
@@ -750,6 +1873,9 @@ impl Workspace {
                 self.search_revision = u64::MAX;
                 self.snippet_cache = Arc::new(Mutex::new(Snippets::default()));
                 self.tabs.clear();
+                self.history_back.clear();
+                self.history_forward.clear();
+                self.history_restore = None;
                 self.active = 0;
                 self.notes_scroll = UniformListScrollHandle::new();
                 self.notes_scroll
@@ -764,7 +1890,15 @@ impl Workspace {
                 self.explorer_menu = None;
                 self.sort_menu = None;
                 self.message("Vault opened", false, cx);
-                if let Some(path) = first {
+                if let (Some(dir), Some(vault)) = (&self.state_directory, &self.vault)
+                    && let Err(error) =
+                        opalglass::state::write_json(&dir.join("last-vault.json"), &vault.root)
+                {
+                    self.message(format!("Could not remember vault: {error}"), true, cx);
+                }
+                if self.navigation.session_initialized {
+                    self.restore_session(window, cx);
+                } else if let Some(path) = first {
                     self.open_note(path, window, cx);
                 } else {
                     self.focus.focus(window);
@@ -776,6 +1910,7 @@ impl Workspace {
     fn cancel_indexing(&mut self) {
         self.index_cancelled.store(true, Ordering::Relaxed);
         self._index = None;
+        self._index_progress = None;
         self.indexing = false;
         self.index_revision = u64::MAX;
     }
@@ -784,6 +1919,7 @@ impl Workspace {
         // on machines with only one background worker.
         if self.loading
             || self.managing
+            || self.checkpointing
             || (self.note_loading && self.tabs.is_empty())
             || self
                 .tabs
@@ -811,13 +1947,54 @@ impl Workspace {
         self.index_revision = revision;
         self.indexing = true;
         self.search_error = None;
+        let total = vault.notes.len();
+        let initial = if vault.content_indexed() {
+            VaultIndexProgress::Search(opalglass::search::SyncProgress::Notes {
+                completed: 0,
+                total,
+            })
+        } else {
+            VaultIndexProgress::Reading {
+                completed: 0,
+                total,
+            }
+        };
+        let progress = Arc::new(Mutex::new(initial));
+        self.indexing_bar.update(cx, |bar, cx| {
+            bar.progress = initial;
+            cx.notify();
+        });
+        let observed = progress.clone();
+        let bar = self.indexing_bar.downgrade();
+        // Update only the small footer entity, at most five times a second.
+        // A distinct progress handle per job prevents stale/cancelled updates.
+        self._index_progress = Some(cx.spawn(async move |_, cx| {
+            loop {
+                Timer::after(Duration::from_millis(200)).await;
+                let latest = *observed.lock().unwrap();
+                if bar
+                    .update(cx, |bar, cx| {
+                        if bar.progress != latest {
+                            bar.progress = latest;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
         self._index = Some(cx.spawn(async move |this, cx| {
             let task_cancelled = cancelled.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let changed = if !vault.content_indexed() {
-                        vault.refresh_cancellable(&cancelled)?
+                        vault.refresh_with_progress(&cancelled, |completed| {
+                            *progress.lock().unwrap() =
+                                VaultIndexProgress::Reading { completed, total };
+                        })?
                     } else {
                         false
                     };
@@ -834,7 +2011,9 @@ impl Workspace {
                         .map(|n| n.path.clone())
                         .collect::<Vec<_>>();
                     index
-                        .synchronize(&paths, &cancelled)
+                        .synchronize_with_progress(&paths, &cancelled, |state| {
+                            *progress.lock().unwrap() = VaultIndexProgress::Search(state);
+                        })
                         .map_err(std::io::Error::other)?;
                     let engine = Arc::new(index.snapshot().map_err(std::io::Error::other)?);
                     Ok::<_, std::io::Error>((vault, changed, index, engine))
@@ -848,6 +2027,7 @@ impl Workspace {
                     return;
                 }
                 this.indexing = false;
+                this._index_progress = None;
                 match result {
                     Ok((vault, changed, index, engine)) => {
                         if changed {
@@ -874,7 +2054,229 @@ impl Workspace {
             && self.index_revision == self.revision
             && self.search_error.is_none()
     }
+    fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.clone() else {
+            return;
+        };
+        let directory = self.state_directory.clone();
+        let saved = self.navigation.tabs.clone();
+        let active = self.navigation.active_tab.clone();
+        let generation = self.note_generation;
+        let root = vault.root.clone();
+        self.restoring = true;
+        self._restore = Some(cx.spawn_in(window, async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut seen = std::collections::HashSet::new();
+                    saved
+                        .into_iter()
+                        .filter_map(|saved| {
+                            if !seen.insert(saved.path.clone()) {
+                                return None;
+                            }
+                            let (text, buffer) = opalglass::state::load_document(
+                                &vault,
+                                &saved.path,
+                                directory.as_deref(),
+                            )
+                            .ok()?;
+                            let prepared = Arc::new(Prepared::opening(buffer.text()));
+                            Some((saved, text, buffer, prepared))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.vault.as_ref().is_none_or(|v| v.root != root) {
+                    return;
+                }
+                this.restoring = false;
+                // User navigation takes precedence over startup restoration.
+                if this.note_generation != generation {
+                    return;
+                }
+                for (saved, text, buffer, prepared) in loaded {
+                    this.install_tab(saved.path, text, buffer, prepared, window, cx);
+                    let tab = this.tabs.last_mut().unwrap();
+                    tab.editor.update(cx, |e, cx| {
+                        e.restore_position(saved.anchor, saved.cursor, saved.source, cx)
+                    });
+                    let offset = ListOffset {
+                        item_ix: saved.preview.row,
+                        offset_in_item: px(saved.preview.offset),
+                    };
+                    if tab.prepared.complete {
+                        tab.preview_scroll.scroll_to(offset);
+                    } else {
+                        tab.pending_preview = Some(offset);
+                    }
+                }
+                this.active = this
+                    .tabs
+                    .iter()
+                    .position(|t| Some(&t.path) == active.as_ref())
+                    .unwrap_or(0);
+                this.focus_document(window, cx);
+                cx.notify();
+            });
+        }));
+    }
+    fn checkpoint(&mut self, cx: &mut Context<Self>) {
+        if self.checkpointing || self.managing || self.loading || self.restoring {
+            return;
+        }
+        let Some(mut vault) = self.vault.clone() else {
+            return;
+        };
+        // Test workspaces opt in by assigning a temporary state directory.
+        let Some(directory) = self.state_directory.clone() else {
+            return;
+        };
+        let autosave = self.preferences.autosave;
+        let mut requests = Vec::new();
+        self.checkpoints
+            .retain(|id, _| self.tabs.iter().any(|t| t.editor.entity_id() == *id));
+        for tab in &self.tabs {
+            let id = tab.editor.entity_id();
+            let key = (
+                tab.editor.read(cx).buffer.revision(),
+                autosave,
+                tab.path.clone(),
+            );
+            if self.checkpoints.get(&id) == Some(&key) {
+                continue;
+            }
+            let dirty = tab.dirty(cx);
+            if dirty || self.checkpoints.contains_key(&id) {
+                requests.push((
+                    id,
+                    tab.path.clone(),
+                    tab.baseline.clone(),
+                    dirty.then(|| tab.disk_text(cx)),
+                ));
+            }
+            self.checkpoints.insert(id, key);
+        }
+        if requests.is_empty() {
+            return;
+        }
+        self.checkpointing = true;
+        let root = vault.root.clone();
+        let started = Instant::now();
+        self._checkpoint = Some(cx.spawn(async move |this, cx| {
+            let (vault, results) = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut results = Vec::new();
+                    for (id, path, baseline, text) in requests {
+                        let result = (|| -> Result<Option<String>, String> {
+                            let Some(text) = text else {
+                                opalglass::state::Recovery::remove(&directory, &vault.root, &path)
+                                    .map_err(|e| e.to_string())?;
+                                return Ok(None);
+                            };
+                            opalglass::state::Recovery {
+                                root: vault.root.clone(),
+                                path: path.clone(),
+                                baseline: baseline.clone(),
+                                text: text.clone(),
+                            }
+                            .save(&directory)
+                            .map_err(|e| format!("Could not save recovery: {e}"))?;
+                            if !autosave {
+                                return Ok(None);
+                            }
+                            vault
+                                .save(&path, &baseline, &text)
+                                .map_err(|e| e.to_string())?;
+                            // Retaining a stale record is safe: load_document compares
+                            // it with disk before offering recovered edits.
+                            let _ =
+                                opalglass::state::Recovery::remove(&directory, &vault.root, &path);
+                            Ok(Some(text))
+                        })();
+                        results.push((id, path, baseline, result));
+                    }
+                    (vault, results)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.checkpointing = false;
+                if this.vault.as_ref().is_none_or(|v| v.root != root) {
+                    return;
+                }
+                let mut saved = 0;
+                let mut errors = Vec::new();
+                for (id, path, baseline, result) in results {
+                    match result {
+                        Ok(Some(text)) => {
+                            if let Some(tab) = this.tabs.iter_mut().find(|t| {
+                                t.editor.entity_id() == id
+                                    && t.path == path
+                                    && t.baseline == baseline
+                            }) {
+                                // Edits made during the write remain in the buffer
+                                // and dirty against the snapshot that reached disk.
+                                tab.baseline_normalized =
+                                    Arc::new(opalglass::document::normalize(&text));
+                                tab.baseline = text;
+                                tab.dirty_cache.set((u64::MAX, true));
+                            }
+                            saved += 1;
+                        }
+                        Ok(None) => (),
+                        Err(error) => {
+                            this.checkpoints.remove(&id);
+                            errors.push(format!("{}: {error}", path.display()));
+                        }
+                    }
+                }
+                if saved > 0 {
+                    this.cancel_indexing();
+                    this.vault = Some(vault);
+                    this.revision += 1;
+                }
+                if !errors.is_empty() {
+                    this.message(
+                        format!("Automatic save/recovery: {}", errors.join("; ")),
+                        true,
+                        cx,
+                    );
+                } else if saved > 0 {
+                    this.message(format!("Automatically saved {saved} note(s)"), false, cx);
+                    this.log_performance("Autosave", format!("{saved} note(s)"), started, cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
     fn persist_navigation(&mut self, cx: &mut Context<Self>) {
+        if self.restoring {
+            return;
+        }
+        self.navigation.session_initialized = true;
+        self.navigation.tabs = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let editor = tab.editor.read(cx);
+                let preview = tab
+                    .pending_preview
+                    .unwrap_or_else(|| tab.preview_scroll.logical_scroll_top());
+                navigation::SessionTab {
+                    path: tab.path.clone(),
+                    cursor: editor.buffer.cursor(),
+                    anchor: editor.buffer.anchor(),
+                    source: editor.saved_scroll(),
+                    preview: navigation::ScrollPosition {
+                        row: preview.item_ix,
+                        offset: preview.offset_in_item.into(),
+                    },
+                }
+            })
+            .collect();
+        self.navigation.active_tab = self.tabs.get(self.active).map(|t| t.path.clone());
         self.navigation.scroll_y = self.notes_scroll.0.borrow().base_handle.offset().y.into();
         if self.persisted_navigation.as_ref() == Some(&self.navigation) {
             return;
@@ -1306,6 +2708,99 @@ impl Workspace {
         })
         .detach();
     }
+    fn current_location(&self, cx: &App) -> Option<navigation::SessionTab> {
+        let tab = self.tabs.get(self.active)?;
+        let editor = tab.editor.read(cx);
+        let preview = tab
+            .pending_preview
+            .unwrap_or_else(|| tab.preview_scroll.logical_scroll_top());
+        Some(navigation::SessionTab {
+            path: tab.path.clone(),
+            cursor: editor.buffer.cursor(),
+            anchor: editor.buffer.anchor(),
+            source: editor.saved_scroll(),
+            preview: navigation::ScrollPosition {
+                row: preview.item_ix,
+                offset: preview.offset_in_item.into(),
+            },
+        })
+    }
+    fn remember_departure(&mut self, cx: &App) {
+        if self.history_request {
+            return;
+        }
+        self.history_restore = None;
+        if let Some(location) = self.current_location(cx) {
+            if self.history_back.last() != Some(&location) {
+                self.history_back.push(location);
+            }
+            if self.history_back.len() > 100 {
+                self.history_back.remove(0);
+            }
+            self.history_forward.clear();
+        }
+    }
+    fn apply_history_position(&mut self, cx: &mut Context<Self>) {
+        let Some(saved) = self.history_restore.take() else {
+            return;
+        };
+        let Some(tab) = self
+            .tabs
+            .get_mut(self.active)
+            .filter(|t| t.path == saved.path)
+        else {
+            return;
+        };
+        tab.editor.update(cx, |e, cx| {
+            e.restore_position(saved.anchor, saved.cursor, saved.source, cx)
+        });
+        let pos = ListOffset {
+            item_ix: saved.preview.row,
+            offset_in_item: px(saved.preview.offset),
+        };
+        if tab.prepared.complete {
+            tab.preview_scroll.scroll_to(pos);
+        } else {
+            tab.pending_preview = Some(pos);
+        }
+        self.preview_pane.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+    fn visit_history(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managing || self.modal != Modal::None || self.settings_open {
+            return;
+        }
+        let current = self.current_location(cx);
+        let stack = if forward {
+            &mut self.history_forward
+        } else {
+            &mut self.history_back
+        };
+        let target = loop {
+            let Some(target) = stack.pop() else {
+                cx.notify();
+                return;
+            };
+            if self
+                .vault
+                .as_ref()
+                .is_some_and(|v| v.contains_path(&target.path))
+            {
+                break target;
+            }
+        };
+        if let Some(current) = current {
+            if forward {
+                self.history_back.push(current);
+            } else {
+                self.history_forward.push(current);
+            }
+        }
+        self.history_restore = Some(target.clone());
+        self.history_request = true;
+        self.open_note(target.path, window, cx);
+        self.history_request = false;
+    }
     fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.open_note_at(path, None, window, cx);
     }
@@ -1316,6 +2811,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.history_request {
+            self.history_restore = None;
+        }
         let started = Instant::now();
         if let Some(tab) = self.tabs.get_mut(self.active)
             && tab.path != path
@@ -1329,6 +2827,7 @@ impl Workspace {
             if heading.is_none() {
                 self.activate_tab(index, window, cx);
             } else {
+                self.remember_departure(cx);
                 self.active = index;
                 self.finish_note_navigation(heading, window, cx);
                 self.log_performance("Follow heading", path.display().to_string(), started, cx);
@@ -1339,6 +2838,7 @@ impl Workspace {
             return;
         };
         let root = vault.root.clone();
+        let directory = self.state_directory.clone();
         let generation = self.note_generation;
         self.modal = Modal::None;
         self.inline_parent = None;
@@ -1353,10 +2853,9 @@ impl Workspace {
                 .background_executor()
                 .spawn(async move {
                     let work = Instant::now();
-                    let text = vault.read(&read_path);
+                    let text = opalglass::state::load_document(&vault, &read_path, directory.as_deref());
                     let read = Instant::now();
-                    let result = text.map(|text| {
-                        let buffer = Buffer::new(opalglass::document::normalize(&text));
+                    let result = text.map(|(text, buffer)| {
                         let prepared = Arc::new(Prepared::opening(buffer.text()));
                         (text, buffer, prepared)
                     });
@@ -1389,65 +2888,12 @@ impl Workspace {
                 };
                 match result {
                     Ok((text, buffer, prepared)) => {
-                        let normalized = buffer.snapshot();
-                        let revision = buffer.revision();
-                        let editor = cx.new(|cx| {
-                            let mut editor =
-                                Editor::from_buffer(buffer, false, "Start writing…", cx);
-                            editor.set_live_preview(this.live_preview, cx);
-                            editor
-                        });
-                        let mut state = (revision, 0, 0);
-                        let subscription = cx.observe(&editor, move |_, editor, cx| {
-                            let buffer = &editor.read(cx).buffer;
-                            let next = (buffer.revision(), buffer.cursor(), buffer.anchor());
-                            // Scrolling invalidates the editor's view, but doesn't
-                            // change the document, footer, or explorer.
-                            if state != next {
-                                state = next;
-                                cx.notify();
-                            }
-                        });
-                        let scroll_subscription = cx.subscribe(
-                            &editor,
-                            |this, editor, _: &crate::editor::ScrollAnchor, cx| {
-                                if this
-                                    .tabs
-                                    .get(this.active)
-                                    .is_some_and(|tab| tab.editor == editor)
-                                {
-                                    this.sync_reading_scroll(cx);
-                                }
-                            },
-                        );
-                        let complete = prepared.complete;
-                        this.tabs.push(Tab {
-                            path,
-                            baseline: text,
-                            baseline_normalized: normalized,
-                            dirty_cache: Cell::new((revision, false)),
-                            preview_scroll: ListState::new(
-                                prepared.rows.len(),
-                                ListAlignment::Top,
-                                px(100.),
-                            ),
-                            connections_cache: None,
-                            connections_scroll: UniformListScrollHandle::new(),
-                            prepared,
-                            prepared_revision: revision,
-                            initial_frame_pending: true,
-                            pending_heading: None,
-                            link_style_revision: (u64::MAX, u64::MAX),
-                            requested_revision: if complete { revision } else { u64::MAX },
-                            _prepare: None,
-                            _disk_reload: None,
-                            prepare_cancelled: Arc::new(AtomicBool::new(false)),
-                            editor,
-                            _subscription: subscription,
-                            _scroll_subscription: scroll_subscription,
-                        });
+                        if this.history_restore.is_none() { this.remember_departure(cx); }
+                        this.install_tab(path, text, buffer, prepared, window, cx);
                         this.active = this.tabs.len() - 1;
-                        this.message("Note opened", false, cx);
+                        if this.tabs[this.active].dirty(cx) {
+                            this.message("Recovered unsaved edits. External changes will be checked before saving.", false, cx);
+                        } else { this.message("Note opened", false, cx); }
                         this.finish_note_navigation(heading, window, cx);
                     }
                     Err(error) => this.message(format!("Could not open note: {error}"), true, cx),
@@ -1456,6 +2902,99 @@ impl Workspace {
                 this.log_performance_phases(action, target, started, phases, cx);
             });
         }));
+    }
+    fn install_tab(
+        &mut self,
+        path: PathBuf,
+        text: String,
+        buffer: Buffer,
+        prepared: Arc<Prepared>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let normalized = Arc::new(opalglass::document::normalize(&text));
+        let dirty = normalized.as_str() != buffer.text();
+        let revision = buffer.revision();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::from_buffer(buffer, false, "Start writing…", cx);
+            editor.set_live_preview(self.live_preview, cx);
+            editor.set_preferences(
+                self.preferences.font_size,
+                self.preferences.line_numbers,
+                cx,
+            );
+            editor
+        });
+        let mut state = (revision, 0, 0);
+        let subscription = cx.observe(&editor, move |_, editor, cx| {
+            let buffer = &editor.read(cx).buffer;
+            let next = (buffer.revision(), buffer.cursor(), buffer.anchor());
+            // Scrolling invalidates the editor's view, but doesn't
+            // change the document, footer, or explorer.
+            if state != next {
+                state = next;
+                cx.notify();
+            }
+        });
+        let scroll_subscription = cx.subscribe(
+            &editor,
+            |this, editor, _: &crate::editor::ScrollAnchor, cx| {
+                if this
+                    .tabs
+                    .get(this.active)
+                    .is_some_and(|tab| tab.editor == editor)
+                {
+                    this.sync_reading_scroll(cx);
+                }
+            },
+        );
+        let completion_subscription = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _, action: &crate::editor::CompletionAction, window, cx| match action {
+                crate::editor::CompletionAction::Accept => this.accept_completion(window, cx),
+                crate::editor::CompletionAction::Dismiss => {
+                    this.completion.dismissed = this.completion.key;
+                    this.close_completion(cx);
+                }
+                _ => {
+                    let count = this.completion.candidates.len();
+                    if count > 0 {
+                        let delta = if matches!(action, crate::editor::CompletionAction::Previous) {
+                            count - 1
+                        } else {
+                            1
+                        };
+                        this.completion.selected = (this.completion.selected + delta) % count;
+                        cx.notify();
+                    }
+                }
+            },
+        );
+        let complete = prepared.complete;
+        self.tabs.push(Tab {
+            path,
+            baseline: text,
+            baseline_normalized: normalized,
+            dirty_cache: Cell::new((revision, dirty)),
+            preview_scroll: ListState::new(prepared.rows.len(), ListAlignment::Top, px(100.)),
+            connections_cache: None,
+            connections_scroll: UniformListScrollHandle::new(),
+            prepared,
+            prepared_revision: revision,
+            initial_frame_pending: true,
+            pending_heading: None,
+            pending_preview: None,
+            link_style_revision: (u64::MAX, u64::MAX),
+            requested_revision: if complete { revision } else { u64::MAX },
+            _prepare: None,
+            _disk_reload: None,
+            prepare_cancelled: Arc::new(AtomicBool::new(false)),
+            editor,
+            _subscription: subscription,
+            _scroll_subscription: scroll_subscription,
+            _completion_subscription: completion_subscription,
+        });
     }
     fn finish_note_navigation(
         &mut self,
@@ -1495,6 +3034,7 @@ impl Workspace {
         self.inline_parent = None;
         self.explorer_menu = None;
         self.sort_menu = None;
+        self.apply_history_position(cx);
         self.focus_document(window, cx);
         cx.notify();
     }
@@ -1806,25 +3346,21 @@ impl Workspace {
                         } else {
                             "RESULTS · indexing…".into()
                         }
+                    } else if self.search_query.trim().is_empty() {
+                        format!(
+                            "NOTES · {}",
+                            self.vault.as_ref().map_or(0, |v| v.notes.len())
+                        )
                     } else {
-                        if self.search_query.trim().is_empty() {
-                            format!(
-                                "NOTES · {}",
-                                self.vault.as_ref().map_or(0, |v| v.notes.len())
-                            )
-                        } else {
-                            format!(
-                                "RESULTS · {}{}",
-                                self.search_results.len(),
-                                if self.search_results.len()
-                                    == opalglass::search::query::RESULT_LIMIT
-                                {
-                                    "+"
-                                } else {
-                                    ""
-                                }
-                            )
-                        }
+                        format!(
+                            "RESULTS · {}{}",
+                            self.search_results.len(),
+                            if self.search_results.len() == opalglass::search::query::RESULT_LIMIT {
+                                "+"
+                            } else {
+                                ""
+                            }
+                        )
                     })),
             );
         let searching = !self.search_query.trim().is_empty();
@@ -2183,7 +3719,8 @@ impl Workspace {
                 let offset = tab.preview_scroll.logical_scroll_top();
                 tab.preview_scroll
                     .splice(0..tab.preview_scroll.item_count(), prepared.rows.len());
-                tab.preview_scroll.scroll_to(offset);
+                tab.preview_scroll
+                    .scroll_to(tab.pending_preview.take().unwrap_or(offset));
                 if let Some(heading) = tab.pending_heading.take()
                     && offset.item_ix == 0
                     && offset.offset_in_item == px(0.)
@@ -2205,6 +3742,10 @@ impl Workspace {
         }));
     }
     fn reload_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.checkpointing {
+            self.message("Finishing automatic save; try again in a moment", false, cx);
+            return;
+        }
         let Some(vault) = self.vault.clone() else {
             return;
         };
@@ -2247,6 +3788,9 @@ impl Workspace {
                         });
                         tab.prepared = prepared;
                         this.revision += 1;
+                        if let (Some(dir), Some(vault)) = (&this.state_directory, &this.vault) {
+                            let _ = opalglass::state::Recovery::remove(dir, &vault.root, &tab.path);
+                        }
                         this.message("Reloaded from disk", false, cx);
                     }
                     Err(error) => this.message(format!("Could not reload note: {error}"), true, cx),
@@ -2305,11 +3849,18 @@ impl Workspace {
         );
     }
     fn save_tab(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        if self.checkpointing {
+            self.message("Finishing automatic save; try again in a moment", false, cx);
+            return false;
+        }
         let started = Instant::now();
         let Some(tab) = self.tabs.get(index) else {
             return true;
         };
         if !tab.dirty(cx) {
+            if let (Some(dir), Some(vault)) = (&self.state_directory, &self.vault) {
+                let _ = opalglass::state::Recovery::remove(dir, &vault.root, &tab.path);
+            }
             return true;
         }
         let target = tab.path.display().to_string();
@@ -2326,6 +3877,13 @@ impl Workspace {
                 self.tabs[index]
                     .dirty_cache
                     .set((self.tabs[index].editor.read(cx).buffer.revision(), false));
+                if let Some(dir) = &self.state_directory {
+                    let _ = opalglass::state::Recovery::remove(
+                        dir,
+                        &vault.root,
+                        &self.tabs[index].path,
+                    );
+                }
                 self.message("Saved to disk", false, cx);
                 self.log_performance("Save note", target, started, cx);
                 true
@@ -2348,6 +3906,10 @@ impl Workspace {
         true
     }
     pub fn save_all_in(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.checkpointing {
+            self.message("Finishing automatic save; try again in a moment", false, cx);
+            return false;
+        }
         if self.managing {
             self.message("Finishing the move and updating links…", false, cx);
             return false;
@@ -2385,6 +3947,9 @@ impl Workspace {
         self.note_generation += 1;
         self._note_load = None;
         self.note_loading = false;
+        if self.active == index {
+            self.remember_departure(cx);
+        }
         self.tabs.remove(index);
         if index < self.active {
             self.active -= 1;
@@ -2398,6 +3963,9 @@ impl Workspace {
         let started = Instant::now();
         if self.managing || index >= self.tabs.len() {
             return;
+        }
+        if self.active != index {
+            self.remember_departure(cx);
         }
         let action = if self.active == index {
             "Tab already open"
@@ -2416,6 +3984,7 @@ impl Workspace {
         self.inline_parent = None;
         self.explorer_menu = None;
         self.sort_menu = None;
+        self.apply_history_position(cx);
         self.focus_document(window, cx);
         if changed {
             cx.notify();
@@ -2505,6 +4074,10 @@ impl Workspace {
                 "",
             ));
         }
+        if menu.target.is_some() {
+            actions.push((Modal::Delete, "Move to trash…", "Delete"));
+        }
+        actions.push((Modal::RestoreTrash, "Restore last deleted item", ""));
         actions
     }
     fn run_explorer_action(&mut self, action: Modal, window: &mut Window, cx: &mut Context<Self>) {
@@ -2512,7 +4085,9 @@ impl Workspace {
             return;
         };
         self.navigation.selected = menu.target;
-        if action == Modal::Move {
+        if action == Modal::RestoreTrash {
+            self.change_trash(None, window, cx);
+        } else if matches!(action, Modal::Move | Modal::Delete) {
             self.show_modal(action, window, cx);
         } else {
             self.show_inline(action, window, cx);
@@ -2867,6 +4442,99 @@ impl Workspace {
             path.parent().unwrap_or(std::path::Path::new("")).into()
         }
     }
+    fn change_trash(
+        &mut self,
+        deleted: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.managing || self.checkpointing {
+            return;
+        }
+        if let Some(path) = &deleted {
+            for index in 0..self.tabs.len() {
+                if self.tabs[index].path.starts_with(path) && !self.save_tab(index, cx) {
+                    self.activate_tab(index, window, cx);
+                    return;
+                }
+            }
+        }
+        let Some(mut vault) = self.vault.clone() else {
+            return;
+        };
+        self.cancel_indexing();
+        self.note_generation += 1;
+        self._note_load = None;
+        self.note_loading = false;
+        self.managing = true;
+        self.revision += 1;
+        self.focus.focus(window);
+        self.message(
+            if deleted.is_some() {
+                "Moving to trash…"
+            } else {
+                "Restoring from trash…"
+            },
+            false,
+            cx,
+        );
+        self._management = Some(cx.spawn_in(window, async move |this, cx| {
+            let path = deleted.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let path = if let Some(path) = path {
+                        vault.trash_entry(&path)?;
+                        path
+                    } else {
+                        vault.restore_last_trashed()?
+                    };
+                    Ok::<_, std::io::Error>((vault, path))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.managing = false;
+                match result {
+                    Ok((vault, path)) => {
+                        let active = this.tabs.get(this.active).map(|t| t.editor.entity_id());
+                        if deleted.is_some() {
+                            this.tabs.retain(|t| !t.path.starts_with(&path));
+                            this.navigation.expanded.retain(|p| !p.starts_with(&path));
+                            this.navigation.selected = None;
+                        }
+                        this.active = this
+                            .tabs
+                            .iter()
+                            .position(|t| Some(t.editor.entity_id()) == active)
+                            .unwrap_or(this.active.min(this.tabs.len().saturating_sub(1)));
+                        this.vault = Some(vault);
+                        this.revision += 1;
+                        this.dismiss(window, cx);
+                        if deleted.is_none() {
+                            this.reveal_path(&path);
+                        }
+                        this.message(
+                            format!(
+                                "{} {}",
+                                if deleted.is_some() {
+                                    "Moved to trash:"
+                                } else {
+                                    "Restored:"
+                                },
+                                path.display()
+                            ),
+                            false,
+                            cx,
+                        );
+                        this.persist_navigation(cx);
+                    }
+                    Err(error) => {
+                        this.message(format!("Could not change trash: {error}"), true, cx)
+                    }
+                }
+            });
+        }));
+    }
     fn move_entry(
         &mut self,
         from: PathBuf,
@@ -2919,13 +4587,16 @@ impl Workspace {
                                 .notes
                                 .iter()
                                 .find(|n| n.path == path)
-                                .filter(|n| n.text != baseline)
-                                .map(|n| {
-                                    let buffer =
-                                        Buffer::new(opalglass::document::normalize(&n.text));
-                                    let prepared = Arc::new(Prepared::new(buffer.text()));
-                                    (n.text.clone(), buffer, prepared)
-                                });
+                                .filter(|n| !n.matches_text(&baseline))
+                                .map(|_| {
+                                    vault.read(&path).map(|text| {
+                                        let buffer =
+                                            Buffer::new(opalglass::document::normalize(&text));
+                                        let prepared = Arc::new(Prepared::new(buffer.text()));
+                                        (text, buffer, prepared)
+                                    })
+                                })
+                                .transpose();
                             (path, replacement)
                         })
                         .collect();
@@ -2936,8 +4607,21 @@ impl Workspace {
                 this.managing = false;
                 match result {
                     Ok((vault, ready)) => {
+                        let mut reload_error = None;
                         for (tab, (path, replacement)) in this.tabs.iter_mut().zip(ready) {
                             tab.path = path;
+                            let replacement = match replacement {
+                                Ok(replacement) => replacement,
+                                Err(error) => {
+                                    // The move already committed. Keep the tab
+                                    // at its new path with its buffer intact.
+                                    reload_error = Some(format!(
+                                        "Moved, but could not reload {}: {error}",
+                                        tab.path.display()
+                                    ));
+                                    None
+                                }
+                            };
                             if let Some((text, mut buffer, prepared)) = replacement {
                                 buffer.move_to(tab.editor.read(cx).buffer.cursor(), false);
                                 tab.baseline = text;
@@ -2958,6 +4642,17 @@ impl Workspace {
                                 tab.prepared = prepared;
                             }
                         }
+                        for location in this
+                            .history_back
+                            .iter_mut()
+                            .chain(this.history_forward.iter_mut())
+                        {
+                            location.path =
+                                opalglass::vault::moved_path(&location.path, &from, &to);
+                        }
+                        for path in &mut this.navigation.bookmarks {
+                            *path = opalglass::vault::moved_path(path, &from, &to);
+                        }
                         this.navigation.expanded = this
                             .navigation
                             .expanded
@@ -2969,7 +4664,11 @@ impl Workspace {
                         this.reveal_path(&to);
                         this.dismiss(window, cx);
                         this.tree_focus.focus(window);
-                        this.message("Moved; wiki links and open tabs updated", false, cx);
+                        if let Some(error) = reload_error {
+                            this.message(error, true, cx);
+                        } else {
+                            this.message("Moved; wiki links and open tabs updated", false, cx);
+                        }
                     }
                     Err(error) => {
                         if this.modal == Modal::None {
@@ -2992,7 +4691,12 @@ impl Workspace {
         self.note_loading = false;
         if matches!(
             modal,
-            Modal::New | Modal::Copy | Modal::NewFolder | Modal::Rename | Modal::Move
+            Modal::New
+                | Modal::Copy
+                | Modal::NewFolder
+                | Modal::Rename
+                | Modal::Move
+                | Modal::Delete
         ) && self.vault.is_none()
         {
             self.message("Open a vault first", true, cx);
@@ -3006,7 +4710,9 @@ impl Workspace {
         self.inline_parent = None;
         self.error = false;
         self.modal_target = self.navigation.selected.clone();
-        if matches!(modal, Modal::Rename | Modal::Move) && self.modal_target.is_none() {
+        if matches!(modal, Modal::Rename | Modal::Move | Modal::Delete)
+            && self.modal_target.is_none()
+        {
             self.message("Select a file or folder first", false, cx);
             return;
         }
@@ -3058,7 +4764,11 @@ impl Workspace {
             }
         });
         self.modal = modal;
-        self.input.read(cx).focus.focus(window);
+        if modal == Modal::Delete {
+            self.focus.focus(window);
+        } else {
+            self.input.read(cx).focus.focus(window);
+        }
         cx.notify();
     }
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3175,6 +4885,12 @@ impl Workspace {
                 self.reload_tab(self.active, cx);
                 self.dismiss(window, cx);
             }
+            Modal::Delete => {
+                if let Some(path) = self.modal_target.clone() {
+                    self.change_trash(Some(path), window, cx);
+                }
+            }
+            Modal::RestoreTrash => self.change_trash(None, window, cx),
             Modal::None => (),
         }
     }
@@ -3209,6 +4925,36 @@ impl Workspace {
             && !event.keystroke.modifiers.alt;
         let shift = event.keystroke.modifiers.shift;
         let key = event.keystroke.key.as_str();
+        if self.picker.is_some() {
+            self.update_picker(cx);
+            let count = self.picker_items.len();
+            match key {
+                "escape" => {
+                    self.picker = None;
+                    self.focus_document(window, cx);
+                }
+                "down" if count > 0 => self.picker_selected = (self.picker_selected + 1) % count,
+                "up" if count > 0 => {
+                    self.picker_selected = (self.picker_selected + count - 1) % count
+                }
+                "enter" => self.accept_picker(window, cx),
+                _ => return,
+            }
+            self.picker_scroll
+                .scroll_to_item(self.picker_selected, ScrollStrategy::Center);
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if self.settings_open {
+            if key == "escape" {
+                self.settings_open = false;
+                self.focus_document(window, cx);
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
         if key == "escape" && cx.has_active_drag() {
             cx.stop_active_drag(window);
             self.tab_drop = None;
@@ -3294,6 +5040,40 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        if event.keystroke.modifiers.alt
+            && (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
+        {
+            match key {
+                "d" => self.open_daily_note(window, cx),
+                "t" => self.show_picker(PickerMode::Templates, window, cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.modifiers.alt && matches!(key, "left" | "right") {
+            self.visit_history(key == "right", window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.find.open && !command {
+            if key == "escape" {
+                self.close_find(window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            if key == "f3" || (key == "enter" && self.find.input.read(cx).focus.is_focused(window))
+            {
+                self.next_find(shift, cx);
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if !command && key == "delete" && self.tree_focus.is_focused(window) {
+            self.show_modal(Modal::Delete, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if !command && key == "f2" {
             if !self.tree_focus.is_focused(window) {
                 self.navigation.selected = self.tabs.get(self.active).map(|t| t.path.clone());
@@ -3346,7 +5126,19 @@ impl Workspace {
                     };
                     self.activate_tab(index, window, cx);
                 }
+                "," => {
+                    self.settings_open = true;
+                    self.focus.focus(window);
+                    cx.notify();
+                }
+                "o" if shift => {
+                    self.outline_open = !self.outline_open;
+                    cx.notify();
+                }
                 "o" => self.pick_vault(window, cx),
+                "f" if !shift => self.open_find(window, cx),
+                "p" if shift => self.show_picker(PickerMode::Commands, window, cx),
+                "d" if shift => self.toggle_bookmark(cx),
                 "p" | "f" if self.vault.is_some() => {
                     self.navigation.hidden = false;
                     self.search.update(cx, |editor, cx| {
@@ -3452,7 +5244,7 @@ impl Workspace {
         .px_6()
         .py_8()
         .bg(rgb(0x181c25))
-        .text_size(px(16.))
+        .text_size(px(16. * self.preferences.font_size / 14.))
         .line_height(relative(1.7))
         .into_any_element()
     }
@@ -3466,7 +5258,8 @@ impl Workspace {
                     2 => 25.,
                     3 => 21.,
                     _ => 18.,
-                }))
+                } * self.preferences.font_size
+                    / 14.))
                 .text_color(rgb(0xf0edf9)),
             Kind::Paragraph => div(),
             Kind::Quote => div()
@@ -3521,10 +5314,32 @@ impl Workspace {
                             .px_4()
                             .py_2()
                             .font_family(MONO_FONT)
-                            .text_size(px(14.))
+                            .text_size(px(self.preferences.font_size))
                             .line_height(relative(1.6))
                             .text_color(rgb(0xc2d8ce))
-                            .child(SharedString::from(row.text.clone())),
+                            .child(
+                                StyledText::new(SharedString::from(row.text.clone()))
+                                    .with_highlights(if self.find.open {
+                                        opalglass::editing::find(
+                                            &row.text,
+                                            self.find.input.read(cx).buffer.text(),
+                                            self.find.case_sensitive,
+                                        )
+                                        .into_iter()
+                                        .map(|r| {
+                                            (
+                                                r,
+                                                HighlightStyle {
+                                                    background_color: Some(rgb(0x655224).into()),
+                                                    ..Default::default()
+                                                },
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                    } else {
+                                        Vec::new()
+                                    }),
+                            ),
                     )
                     .into_any_element();
             }
@@ -3570,6 +5385,37 @@ impl Workspace {
                 )
             })
             .collect::<Vec<_>>();
+        let highlights = if self.find.open {
+            let matches = opalglass::editing::find(
+                &row.text,
+                self.find.input.read(cx).buffer.text(),
+                self.find.case_sensitive,
+            );
+            let mut cuts = vec![0, row.text.len()];
+            for (r, _) in &highlights {
+                cuts.extend([r.start, r.end]);
+            }
+            for r in &matches {
+                cuts.extend([r.start, r.end]);
+            }
+            cuts.sort_unstable();
+            cuts.dedup();
+            cuts.windows(2)
+                .filter(|p| p[0] < p[1])
+                .map(|p| {
+                    let mut style = highlights
+                        .iter()
+                        .find(|(r, _)| r.contains(&p[0]))
+                        .map_or(HighlightStyle::default(), |(_, s)| *s);
+                    if matches.iter().any(|r| r.contains(&p[0])) {
+                        style.background_color = Some(rgb(0x655224).into());
+                    }
+                    (p[0]..p[1], style)
+                })
+                .collect()
+        } else {
+            highlights
+        };
         let ranges = spans
             .iter()
             .filter(|s| s.style.target.is_some())
@@ -3601,8 +5447,12 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(debug_assertions)]
         self.performance.update(cx, |bar, _| bar.mark_frame_start());
+        self.update_picker(cx);
         self.update_search(window, cx);
+        self.update_find(cx);
+        self.update_completion(window, cx);
         self.update_tree();
         if self.modal == Modal::Move {
             self.update_move_results(cx);
@@ -3776,6 +5626,33 @@ impl Render for Workspace {
                 .border_color(rgb(LINE))
                 .gap_3()
                 .child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(
+                            icon_button(
+                                "history-back",
+                                ToolbarIcon::Back,
+                                "Back · Alt ←".into(),
+                                !self.history_back.is_empty(),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, w, cx| this.visit_history(false, w, cx)),
+                            ),
+                        )
+                        .child(
+                            icon_button(
+                                "history-forward",
+                                ToolbarIcon::Forward,
+                                "Forward · Alt →".into(),
+                                !self.history_forward.is_empty(),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, w, cx| this.visit_history(true, w, cx)),
+                            ),
+                        ),
+                )
+                .child(
                     caption(path.display().to_string())
                         .flex_1()
                         .min_w_0()
@@ -3821,6 +5698,18 @@ impl Render for Workspace {
                     ),
                 );
             }
+            modes = modes.child(
+                icon_button(
+                    "toggle-outline",
+                    ToolbarIcon::Outline,
+                    "Heading outline · Ctrl Shift O".into(),
+                    true,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.outline_open = !this.outline_open;
+                    cx.notify();
+                })),
+            );
             tools = tools.child(
                 modes
                     .child(div().w(px(8.)))
@@ -3854,6 +5743,9 @@ impl Render for Workspace {
                     ),
             );
             main = main.child(tools);
+            if self.find.open {
+                main = main.child(self.find_bar(cx));
+            }
             let mut panes = div()
                 .debug_selector(|| "note-panes".into())
                 .flex_1()
@@ -3996,7 +5888,14 @@ impl Render for Workspace {
                     .size_full(),
                 );
             }
-            main = main.child(panes);
+            main = main.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(panes)
+                    .when(self.outline_open, |row| row.child(self.outline(cx))),
+            );
             let rows = self.connections.read(cx).items.len().div_ceil(3).min(3);
             let height = 34. + rows as f32 * 30.;
             main = main.child(
@@ -4086,6 +5985,14 @@ impl Render for Workspace {
                     this.split_drag_offset = None;
                 }
             }))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, w, cx| this.visit_history(false, w, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, w, cx| this.visit_history(true, w, cx)),
+            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| {
@@ -4131,7 +6038,57 @@ impl Render for Workspace {
                                         cx.notify();
                                     },
                                 )),
-                            ),
+                            )
+                            .child(
+                                icon_button(
+                                    "command-palette",
+                                    ToolbarIcon::Commands,
+                                    "Command palette · Ctrl Shift P".into(),
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, w, cx| this.show_picker(PickerMode::Commands, w, cx),
+                                )),
+                            )
+                            .child(
+                                icon_button(
+                                    "bookmarks",
+                                    ToolbarIcon::Bookmark,
+                                    "Bookmarks".into(),
+                                    self.vault.is_some(),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, w, cx| this.show_picker(PickerMode::Bookmarks, w, cx),
+                                )),
+                            )
+                            .child(
+                                icon_button(
+                                    "daily-note",
+                                    ToolbarIcon::Calendar,
+                                    "Open today's note · Ctrl Alt D".into(),
+                                    self.vault.is_some(),
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, w, cx| this.open_daily_note(w, cx)),
+                                ),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                icon_button(
+                                    "settings",
+                                    ToolbarIcon::Settings,
+                                    "Settings · Ctrl ,".into(),
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.settings_open = true;
+                                        this.focus.focus(window);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .pb_2(),
                     )
                     .when(!self.navigation.hidden, |el| {
                         el.child(
@@ -4183,18 +6140,35 @@ impl Render for Workspace {
                             .text_color(rgb(if self.error { 0xf1b18e } else { MUTED }))
                             .child(self.status.clone()),
                     )
-                    .child(
-                        div().w(px(230.)).h(px(18.)).flex_shrink_0().child(
-                            AnyView::from(self.performance.clone())
-                                .cached(StyleRefinement::default().size_full()),
-                        ),
-                    )
-                    .child(caption(if self.indexing {
-                        format!("Indexing note contents…   ·   {metrics}")
-                    } else {
-                        metrics
-                    })),
+                    .map(|footer| {
+                        #[cfg(debug_assertions)]
+                        let footer = footer.child(
+                            div().w(px(230.)).h(px(18.)).flex_shrink_0().child(
+                                AnyView::from(self.performance.clone())
+                                    .cached(StyleRefinement::default().size_full()),
+                            ),
+                        );
+                        footer
+                    })
+                    .when(self.indexing, |footer| {
+                        footer.child(
+                            div().w(px(180.)).h(px(18.)).flex_shrink_0().child(
+                                AnyView::from(self.indexing_bar.clone())
+                                    .cached(StyleRefinement::default().size_full()),
+                            ),
+                        )
+                    })
+                    .child(caption(metrics)),
             );
+        if !self.completion.candidates.is_empty() {
+            root = root.child(self.completion_menu(window, cx));
+        }
+        if self.picker.is_some() {
+            root = root.child(self.picker_panel(cx));
+        }
+        if self.settings_open {
+            root = root.child(self.settings_panel(cx));
+        }
         if self.sort_menu.is_some() && !self.managing {
             root = root.child(self.render_sort_menu(cx));
         }
@@ -4239,7 +6213,12 @@ impl Render for Workspace {
                     "A new name. Saves open edits and updates resolved wiki links.",
                     "Rename",
                 ),
-                Modal::Move | Modal::None => unreachable!(),
+                Modal::Delete => (
+                    "Move to trash?",
+                    "Unsaved edits are saved first. Restore this item from the explorer’s right-click menu.",
+                    "Move to trash",
+                ),
+                Modal::Move | Modal::None | Modal::RestoreTrash => unreachable!(),
             };
             root = root.child(
                 div()
@@ -4269,7 +6248,17 @@ impl Render for Workspace {
                                     .child(title),
                             )
                             .child(caption(hint))
-                            .when(self.modal != Modal::Reload, |el| {
+                            .when(self.modal == Modal::Delete, |el| {
+                                el.child(
+                                    div().text_sm().child(
+                                        self.modal_target
+                                            .as_ref()
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_default(),
+                                    ),
+                                )
+                            })
+                            .when(!matches!(self.modal, Modal::Reload | Modal::Delete), |el| {
                                 el.child(
                                     div()
                                         .h(px(44.))
@@ -4318,7 +6307,7 @@ impl Render for Workspace {
                             .p_6()
                             .rounded_lg()
                             .bg(rgb(PANEL))
-                            .child("Moving and updating wiki links…"),
+                            .child(self.status.clone()),
                     ),
             );
         }
@@ -4326,6 +6315,92 @@ impl Render for Workspace {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultIndexProgress {
+    Reading { completed: usize, total: usize },
+    Search(opalglass::search::SyncProgress),
+}
+impl VaultIndexProgress {
+    fn fraction(self) -> f32 {
+        let ratio = |done: usize, total: usize| {
+            if total == 0 {
+                0.
+            } else {
+                (done as f32 / total as f32).clamp(0., 1.)
+            }
+        };
+        match self {
+            Self::Reading { completed, total } => 0.1 * ratio(completed, total),
+            Self::Search(opalglass::search::SyncProgress::Notes { completed, total }) => {
+                0.1 + 0.8 * ratio(completed, total)
+            }
+            Self::Search(opalglass::search::SyncProgress::Finalizing) => 0.9,
+            Self::Search(opalglass::search::SyncProgress::Complete) => 1.,
+        }
+    }
+    fn detail(self) -> String {
+        match self {
+            Self::Reading { completed, total } => {
+                format!("Reading note links · {completed} / {total}")
+            }
+            Self::Search(opalglass::search::SyncProgress::Notes { completed, total }) => {
+                format!("Indexing notes · {completed} / {total}")
+            }
+            Self::Search(opalglass::search::SyncProgress::Finalizing) => {
+                "Finishing search index…".into()
+            }
+            Self::Search(opalglass::search::SyncProgress::Complete) => "Search index ready".into(),
+        }
+    }
+}
+struct IndexingBar {
+    progress: VaultIndexProgress,
+}
+impl Default for IndexingBar {
+    fn default() -> Self {
+        Self {
+            progress: VaultIndexProgress::Reading {
+                completed: 0,
+                total: 0,
+            },
+        }
+    }
+}
+impl Render for IndexingBar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let detail = self.progress.detail();
+        div()
+            .id("indexing-vault")
+            .debug_selector(|| "indexing-vault".into())
+            .size_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_shrink_0()
+            .text_xs()
+            .text_color(rgb(MUTED))
+            .child("Indexing vault")
+            .child(
+                div()
+                    .w(px(64.))
+                    .h(px(4.))
+                    .rounded_full()
+                    .bg(rgb(LINE))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .debug_selector(|| "indexing-progress-fill".into())
+                            .w(relative(self.progress.fraction()))
+                            .h_full()
+                            .rounded_full()
+                            .bg(rgb(ACCENT)),
+                    ),
+            )
+            .tooltip(move |_, cx| cx.new(|_| PathTooltip(detail.clone())).into())
+    }
+}
+
+#[cfg(debug_assertions)]
 struct PendingPerformance {
     action: &'static str,
     target: String,
@@ -4335,6 +6410,7 @@ struct PendingPerformance {
     phases: Vec<(&'static str, Duration)>,
 }
 
+#[cfg(debug_assertions)]
 struct PerformanceEntry {
     action: &'static str,
     target: String,
@@ -4342,6 +6418,7 @@ struct PerformanceEntry {
     phases: Vec<(&'static str, Duration)>,
 }
 
+#[cfg(debug_assertions)]
 impl PerformanceEntry {
     fn label(&self) -> String {
         format!(
@@ -4353,11 +6430,13 @@ impl PerformanceEntry {
 }
 
 #[derive(Default)]
+#[cfg(debug_assertions)]
 struct PerformanceBar {
     pending: Vec<PendingPerformance>,
     history: std::collections::VecDeque<PerformanceEntry>,
 }
 
+#[cfg(debug_assertions)]
 impl PerformanceBar {
     fn mark_frame_start(&mut self) {
         let now = Instant::now();
@@ -4402,6 +6481,7 @@ impl PerformanceBar {
     }
 }
 
+#[cfg(debug_assertions)]
 impl Render for PerformanceBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.mark_frame_start();

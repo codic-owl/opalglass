@@ -34,6 +34,14 @@ struct CachedRow {
 }
 
 pub struct ScrollAnchor;
+#[derive(Clone, Copy)]
+pub enum CompletionAction {
+    Previous,
+    Next,
+    Accept,
+    Dismiss,
+}
+impl EventEmitter<CompletionAction> for Editor {}
 
 impl EventEmitter<ScrollAnchor> for Editor {}
 
@@ -48,6 +56,9 @@ pub struct Editor {
     pub focus: FocusHandle,
     single_line: bool,
     pub live_preview: bool,
+    pub completion_visible: bool,
+    pub font_size: f32,
+    pub line_numbers: bool,
     live_revealed: Option<Range<usize>>,
     live_lines: Vec<(Range<usize>, bool, Arc<live::Line>)>,
     code_blocks: Vec<Range<usize>>,
@@ -66,6 +77,7 @@ pub struct Editor {
     source_requested_revision: u64,
     _source_prepare: Option<Task<()>>,
     source_list: ListState,
+    pending_scroll: Option<opalglass::navigation::ScrollPosition>,
     pub scroll_anchor: Option<(u64, f64)>,
     source_width: Pixels,
     visible_rows: Vec<SourceRow>,
@@ -73,6 +85,7 @@ pub struct Editor {
     syntax_version: u64,
     pub source_links: Vec<Range<usize>>,
     pub missing_links: Vec<Range<usize>>,
+    find_matches: Arc<Vec<Range<usize>>>,
 }
 
 impl Editor {
@@ -101,6 +114,9 @@ impl Editor {
             focus: cx.focus_handle(),
             single_line,
             live_preview: false,
+            completion_visible: false,
+            font_size: 14.,
+            line_numbers: true,
             live_revealed: None,
             live_lines: Vec::new(),
             code_blocks: Vec::new(),
@@ -119,6 +135,7 @@ impl Editor {
             source_requested_revision: u64::MAX,
             _source_prepare: None,
             source_list: ListState::new(0, ListAlignment::Top, px(100.)),
+            pending_scroll: None,
             scroll_anchor: None,
             source_width: px(0.),
             visible_rows: Vec::new(),
@@ -126,6 +143,7 @@ impl Editor {
             syntax_version: u64::MAX,
             source_links: Vec::new(),
             missing_links: Vec::new(),
+            find_matches: Arc::new(Vec::new()),
         }
     }
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -144,11 +162,66 @@ impl Editor {
         self.source_links.clear();
         self.missing_links.clear();
         self.source_list.reset(0);
+        self.pending_scroll = None;
         self.scroll_anchor = None;
         self.scroll = px(0.);
         self.scroll_x = px(0.);
         self.reveal = true;
         cx.notify();
+    }
+    pub fn link_query(&self) -> Option<(Range<usize>, String)> {
+        if self.single_line
+            || !self.buffer.selection().is_empty()
+            || self.buffer.marked.is_some()
+            || self
+                .code_blocks
+                .iter()
+                .any(|r| r.contains(&self.buffer.cursor()))
+        {
+            return None;
+        }
+        let cursor = self.buffer.cursor();
+        let start = self.buffer.line_start(cursor);
+        let before = &self.buffer.text()[start..cursor];
+        let opening = before.rfind("[[")?;
+        if opening > 0 && before.as_bytes()[opening - 1] == b'\\' {
+            return None;
+        }
+        let query = &before[opening + 2..];
+        if query.contains([']', '|', '#', '[']) || query.len() > 256 {
+            return None;
+        }
+        let after = &self.buffer.text()[cursor..];
+        let end = cursor + if after.starts_with("]]") { 2 } else { 0 };
+        Some((start + opening..end, query.to_owned()))
+    }
+    pub fn caret_position(&self) -> Point<Pixels> {
+        self.point_for(self.buffer.cursor())
+    }
+    fn gutter(&self) -> f32 {
+        if self.line_numbers { GUTTER } else { PAD }
+    }
+    pub fn set_preferences(&mut self, font_size: f32, line_numbers: bool, cx: &mut Context<Self>) {
+        if self.single_line || (self.font_size == font_size && self.line_numbers == line_numbers) {
+            return;
+        }
+        self.font_size = font_size.clamp(10., 28.);
+        self.line_numbers = line_numbers;
+        self.cached_rows.clear();
+        let offset = self.source_list.logical_scroll_top();
+        self.source_list
+            .splice(0..self.source_list.item_count(), self.source_ranges.len());
+        self.source_list.scroll_to(offset);
+        cx.notify();
+    }
+    pub fn set_find_matches(&mut self, matches: Arc<Vec<Range<usize>>>, cx: &mut Context<Self>) {
+        self.find_matches = matches;
+        self.cached_rows.clear();
+        cx.notify();
+    }
+    pub fn select_match(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.buffer.select(range.start, range.end);
+        self.changed(cx);
     }
     pub fn set_live_preview(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.single_line || self.live_preview == enabled {
@@ -170,6 +243,27 @@ impl Editor {
             self.live_lines.clear();
             self.cached_rows.clear();
         }
+    }
+    pub fn saved_scroll(&self) -> opalglass::navigation::ScrollPosition {
+        self.pending_scroll.unwrap_or_else(|| {
+            let pos = self.source_list.logical_scroll_top();
+            opalglass::navigation::ScrollPosition {
+                row: pos.item_ix,
+                offset: pos.offset_in_item.into(),
+            }
+        })
+    }
+    pub fn restore_position(
+        &mut self,
+        anchor: usize,
+        cursor: usize,
+        scroll: opalglass::navigation::ScrollPosition,
+        cx: &mut Context<Self>,
+    ) {
+        self.buffer.select(anchor, cursor);
+        self.pending_scroll = Some(scroll);
+        self.reveal = false;
+        cx.notify();
     }
     pub fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
         self.source_list.scroll_by(delta);
@@ -198,8 +292,12 @@ impl Editor {
         }
     }
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.pending_scroll = None;
         self.reveal = true;
         cx.notify();
+    }
+    pub fn reveal_cursor(&mut self, cx: &mut Context<Self>) {
+        self.changed(cx);
     }
     pub fn jump_to(&mut self, index: usize, cx: &mut Context<Self>) {
         self.preferred_x = None;
@@ -211,11 +309,40 @@ impl Editor {
         let modifiers = event.keystroke.modifiers;
         let command = (modifiers.control || modifiers.platform) && !modifiers.alt;
         let shift = modifiers.shift;
+        if modifiers.alt && matches!(key.as_str(), "left" | "right") {
+            return;
+        }
+        if self.completion_visible && !command && !modifiers.alt {
+            let action = match key.as_str() {
+                "up" => Some(CompletionAction::Previous),
+                "down" => Some(CompletionAction::Next),
+                "enter" | "tab" => Some(CompletionAction::Accept),
+                "escape" => Some(CompletionAction::Dismiss),
+                _ => None,
+            };
+            if let Some(action) = action {
+                cx.emit(action);
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if !self.single_line && (modifiers.control || modifiers.platform) && modifiers.alt {
+            match key.as_str() {
+                "b" => opalglass::editing::wrap(&mut self.buffer, "**"),
+                "i" => opalglass::editing::wrap(&mut self.buffer, "*"),
+                "c" => opalglass::editing::wrap(&mut self.buffer, "`"),
+                _ => return,
+            }
+            self.changed(cx);
+            cx.stop_propagation();
+            return;
+        }
         if !matches!(key.as_str(), "up" | "down" | "pageup" | "pagedown") {
             self.preferred_x = None;
         }
         if command {
             match key.as_str() {
+                "enter" if !self.single_line => opalglass::editing::toggle_task(&mut self.buffer),
                 "a" => self.buffer.select(0, self.buffer.text().len()),
                 "c" => {
                     cx.write_to_clipboard(ClipboardItem::new_string(self.buffer.selected().into()))
@@ -268,8 +395,31 @@ impl Editor {
                     .move_to(self.buffer.line_end(self.buffer.cursor()), shift),
                 "backspace" => self.buffer.delete(true),
                 "delete" => self.buffer.delete(false),
-                "enter" if !self.single_line => self.buffer.insert("\n"),
-                "tab" if !self.single_line => self.buffer.insert("    "),
+                "enter" if !self.single_line => {
+                    let in_code = self
+                        .code_blocks
+                        .iter()
+                        .any(|r| r.contains(&self.buffer.cursor()));
+                    if shift || in_code {
+                        self.buffer.insert("\n");
+                    } else {
+                        opalglass::editing::newline(&mut self.buffer);
+                    }
+                }
+                "tab" if !self.single_line => {
+                    if shift
+                        || !self.buffer.selection().is_empty()
+                        || opalglass::editing::list_prefix(
+                            &self.buffer.text()[self.buffer.line_start(self.buffer.cursor())
+                                ..self.buffer.line_end(self.buffer.cursor())],
+                        )
+                        .is_some()
+                    {
+                        opalglass::editing::indent(&mut self.buffer, shift);
+                    } else {
+                        self.buffer.insert("    ");
+                    }
+                }
                 _ => return,
             }
         }
@@ -365,7 +515,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let height = if self.live_preview {
+        let height = if !self.single_line {
             self.prepare_source();
             let index = self
                 .source_ranges
@@ -480,6 +630,7 @@ impl Editor {
                 .splice(0..self.source_list.item_count(), self.source_ranges.len());
             self.source_list.scroll_to(offset);
             self.source_version = self.buffer.revision();
+            self.find_matches = Arc::new(Vec::new());
             self.cached_rows.clear();
             self.live_lines.clear();
         }
@@ -503,11 +654,21 @@ impl Editor {
         // Explicit navigation outside the opening viewport must work even if
         // the background index has not arrived yet (Ctrl+End, heading jumps).
         if !self.source_complete
+            && self.pending_scroll.is_none()
             && self.buffer.cursor() >= self.source_ranges.last().map_or(0, |r| r.end)
         {
             let ranges = opalglass::document::source_rows(self.buffer.text());
             self.finish_source_index(ranges);
             self._source_prepare = None;
+        }
+        if let Some(pos) = self.pending_scroll
+            && (self.source_complete || pos.row < self.source_ranges.len())
+        {
+            self.source_list.scroll_to(ListOffset {
+                item_ix: pos.row.min(self.source_ranges.len().saturating_sub(1)),
+                offset_in_item: px(pos.offset),
+            });
+            self.pending_scroll = None;
         }
         if self.reveal {
             let index = self
@@ -649,6 +810,14 @@ impl Editor {
                 display_selection.start,
                 display_selection.end,
             ];
+            let first_match = self.find_matches.partition_point(|r| r.end <= range.start);
+            let matches: Vec<_> = self.find_matches[first_match..]
+                .iter()
+                .take_while(|r| r.start < range.end)
+                .collect();
+            for r in &matches {
+                cuts.extend([to_display(r.start), to_display(r.end)]);
+            }
             let first_link = self.source_links.partition_point(|r| r.end <= range.start);
             let links: Vec<_> = self.source_links[first_link..]
                 .iter()
@@ -688,11 +857,13 @@ impl Editor {
             } else {
                 14.
             };
+            let scale = self.font_size / 14.;
             let line_height = px(if self.live_preview {
                 (font_size * 1.5_f32).max(LINE)
             } else {
                 LINE
-            });
+            }) * scale;
+            let font_size = font_size * scale;
             let prefix = self
                 .buffer
                 .text()
@@ -746,6 +917,8 @@ impl Editor {
                             && pair[1] <= display_selection.end
                         {
                             Some(rgb(0x38496a).into())
+                        } else if matches.iter().any(|r| r.contains(&source)) {
+                            Some(rgb(0x655224).into())
                         } else {
                             inline_code.then(|| rgb(0x252e37).into())
                         },
@@ -825,14 +998,15 @@ impl Editor {
                     editor
                         .first_paint_indexed_rows
                         .get_or_insert(editor.source_ranges.len());
-                    let origin = bounds.origin + point(px(GUTTER), px(0.));
+                    let gutter = editor.gutter();
+                    let origin = bounds.origin + point(px(gutter), px(0.));
                     let active = editor.buffer.line_start(editor.buffer.cursor())
                         == editor.buffer.line_start(range.start);
                     if matches!(projection.kind, live::Kind::Code | live::Kind::Fence) {
                         window.paint_quad(fill(
                             Bounds::new(
                                 origin - point(px(8.), px(0.)),
-                                size(bounds.size.width - px(GUTTER - 8.), bounds.size.height),
+                                size(bounds.size.width - px(gutter - 8.), bounds.size.height),
                             ),
                             rgb(0x10131a),
                         ));
@@ -857,7 +1031,7 @@ impl Editor {
                             rgb(0x3b4254),
                         ));
                     }
-                    if editor.buffer.line_start(range.start) == range.start {
+                    if editor.line_numbers && editor.buffer.line_start(range.start) == range.start {
                         let number = editor.buffer.line_number(range.start).to_string();
                         let number_line = window.text_system().shape_line(
                             number.clone().into(),
@@ -873,7 +1047,7 @@ impl Editor {
                             None,
                         );
                         let number_origin =
-                            bounds.origin + point(px(GUTTER - 16.) - number_line.width, px(0.));
+                            bounds.origin + point(px(gutter - 16.) - number_line.width, px(0.));
                         let _ = number_line.paint(number_origin, line_height, window, cx);
                     }
                     editor.visible_rows.push(SourceRow {
@@ -1108,8 +1282,8 @@ impl Render for Editor {
                             prepaint_entity.update(cx, |editor, _| {
                                 editor.bounds = bounds;
                                 editor.visible_rows.clear();
-                                let width =
-                                    (bounds.size.width - px(PAD * 2. + GUTTER)).max(px(20.));
+                                let width = (bounds.size.width - px(PAD * 2. + editor.gutter()))
+                                    .max(px(20.));
                                 if editor.source_width != width {
                                     let had_width = editor.source_width > px(0.);
                                     editor.source_width = width;

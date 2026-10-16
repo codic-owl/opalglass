@@ -1,4 +1,6 @@
 //! Real GPUI window, native font shaping, compositor and GPU. Uses only temporary notes.
+#[global_allocator]
+static ALLOCATOR: opalglass::Allocator = opalglass::Allocator;
 #[path = "../src/editor.rs"]
 mod editor;
 #[path = "../src/theme.rs"]
@@ -28,8 +30,11 @@ mod workspace {
                     Timer::after(Duration::from_millis(500)).await;
                 }
                 let _ = this.update_in(cx, |this, window, cx| {
+                    let _ = this;
                     println!("Native viewport: {:?}", window.viewport_size());
+                    #[cfg(debug_assertions)]
                     println!("{}", this.performance.read(cx).log_text());
+                    #[cfg(debug_assertions)]
                     if this.performance.read(cx).history.len() != 14 {
                         eprintln!("Incomplete or interrupted benchmark: expected 14 painted actions. Keep the window visible and do not interact while it runs.");
                     }

@@ -15,7 +15,9 @@ use std::{
     },
 };
 use tantivy::{
-    DocAddress, Index, IndexReader, IndexWriter, Searcher, TantivyDocument, Term, doc,
+    DocAddress, Index, IndexReader, IndexWriter, Searcher, TantivyDocument, Term,
+    directory::{Directory, DirectoryLock, Lock},
+    doc,
     indexer::IndexWriterOptions,
     schema::{Field, STORED, STRING, Schema, TEXT, Value},
 };
@@ -23,6 +25,14 @@ use tantivy::{
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub const FORMAT: u64 = 3;
 const BATCH_BYTES: usize = 16 * 1024 * 1024;
+const WRITER_MEMORY_BYTES: usize = 32 * 1024 * 1024;
+
+fn indexing_worker_count(available_cpus: usize) -> usize {
+    // Leave CPU capacity for the producer, merges and UI. More workers create
+    // more segments to merge; four added memory without a reliable speedup in
+    // the large-vault audit.
+    (available_cpus / 2).clamp(1, 2)
+}
 
 #[derive(Clone, Copy)]
 pub struct Fields {
@@ -133,7 +143,6 @@ fn versions(searcher: &Searcher, f: Fields) -> Result<HashMap<PathBuf, FileVersi
         .collect()
 }
 struct Worker {
-    writer: IndexWriter,
     reader: IndexReader,
     versions: HashMap<PathBuf, FileVersion>,
 }
@@ -142,6 +151,9 @@ pub struct SearchIndex {
     index: Index,
     fields: Fields,
     worker: Mutex<Worker>,
+    // Reserve the cache between updates without retaining indexing threads or
+    // their arenas. Tantivy's own writer lock is held only while writing.
+    _cache_lock: DirectoryLock,
     storage: Option<Arc<tempfile::TempDir>>,
     pub directory: PathBuf,
     pub persistent: bool,
@@ -151,6 +163,12 @@ pub struct SyncReport {
     pub updated: usize,
     pub removed: usize,
     pub notes: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncProgress {
+    Notes { completed: usize, total: usize },
+    Finalizing,
+    Complete,
 }
 impl SearchIndex {
     /// cache_base=None creates an isolated temporary index (tests / unavailable cache).
@@ -202,13 +220,10 @@ impl SearchIndex {
             Index::create_in_dir(&directory, schema())?
         };
         let fields = Fields::from(&index.schema())?;
-        let writer = index.writer_with_options(
-            IndexWriterOptions::builder()
-                .num_worker_threads(1)
-                .num_merge_threads(1)
-                .memory_budget_per_thread(32 * 1024 * 1024)
-                .build(),
-        )?;
+        let cache_lock = index.directory().acquire_lock(&Lock {
+            filepath: ".opalglass-cache.lock".into(),
+            is_blocking: false,
+        })?;
         let reader = index
             .reader_builder()
             .reload_policy(tantivy::ReloadPolicy::Manual)
@@ -227,8 +242,8 @@ impl SearchIndex {
             directory,
             persistent: storage.is_none(),
             storage,
+            _cache_lock: cache_lock,
             worker: Mutex::new(Worker {
-                writer,
                 reader,
                 versions: known,
             }),
@@ -237,24 +252,69 @@ impl SearchIndex {
     /// Call on a worker. Paths come from a completed vault inventory, never from query text.
     /// Unchanged notes are checked by metadata and are not read/tokenized again.
     pub fn synchronize(&self, paths: &[PathBuf], cancelled: &AtomicBool) -> Result<SyncReport> {
+        self.synchronize_with_progress(paths, cancelled, |_| {})
+    }
+    /// Reports actual file processing and keeps final commits/merges distinct
+    /// from completion. Callbacks run on the indexing worker, never the UI.
+    pub fn synchronize_with_progress(
+        &self,
+        paths: &[PathBuf],
+        cancelled: &AtomicBool,
+        mut progress: impl FnMut(SyncProgress),
+    ) -> Result<SyncReport> {
         check(cancelled)?;
         let mut worker = self.worker.lock().map_err(|_| "Search writer failed")?;
         check(cancelled)?;
-        let result = self.synchronize_locked(&mut worker, paths, cancelled);
-        if result.is_err() {
-            // Keep previous committed batches. Reconstruct versions after rolling back
-            // the unfinished batch, so a cancelled update can safely resume.
-            let _ = worker.writer.rollback();
+        let mut writer = None;
+        progress(SyncProgress::Notes {
+            completed: 0,
+            total: paths.len(),
+        });
+        let result =
+            self.synchronize_locked(&mut worker, &mut writer, paths, cancelled, &mut progress);
+        if let Some(mut writer) = writer {
+            if result.is_err() {
+                // Keep previous committed batches; discard the unfinished one.
+                let _ = writer.rollback();
+            }
+            // Finish merges before publishing the searcher and release indexing
+            // threads and arenas even when the SearchIndex stays open for days.
+            let finished = writer.wait_merging_threads();
             worker.reader.reload()?;
-            worker.versions = versions(&worker.reader.searcher(), self.fields)?;
+            if result.is_err() || finished.is_err() {
+                worker.versions = versions(&worker.reader.searcher(), self.fields)?;
+            }
+            finished?;
+        }
+        if result.is_ok() {
+            progress(SyncProgress::Complete);
         }
         result
+    }
+    fn writer<'a>(&self, writer: &'a mut Option<IndexWriter>) -> Result<&'a mut IndexWriter> {
+        if writer.is_none() {
+            let workers = indexing_worker_count(
+                std::thread::available_parallelism().map_or(1, |cpus| cpus.get()),
+            );
+            *writer = Some(
+                self.index.writer_with_options(
+                    IndexWriterOptions::builder()
+                        .num_worker_threads(workers)
+                        .num_merge_threads(1)
+                        .memory_budget_per_thread(WRITER_MEMORY_BYTES / workers)
+                        .build(),
+                )?,
+            );
+        }
+        Ok(writer.as_mut().unwrap())
     }
     fn synchronize_locked(
         &self,
         worker: &mut Worker,
+        writer: &mut Option<IndexWriter>,
         paths: &[PathBuf],
         cancelled: &AtomicBool,
+        progress: &mut impl FnMut(SyncProgress),
     ) -> Result<SyncReport> {
         let mut report = SyncReport::default();
         let wanted: HashSet<_> = paths.iter().cloned().collect();
@@ -266,7 +326,7 @@ impl SearchIndex {
             .collect();
         for path in removed {
             check(cancelled)?;
-            worker.writer.delete_term(Term::from_field_text(
+            self.writer(writer)?.delete_term(Term::from_field_text(
                 self.fields.path,
                 &path.to_string_lossy(),
             ));
@@ -275,11 +335,15 @@ impl SearchIndex {
         }
         let mut tokenizer = self.index.tokenizer_for_field(self.fields.body)?;
         let mut pending_bytes = 0;
-        for relative in paths {
+        for (position, relative) in paths.iter().enumerate() {
             check(cancelled)?;
             let path = checked_path(&self.root, relative)?;
             let before = FileVersion::read(&path)?;
             if worker.versions.get(relative) == Some(&before) {
+                progress(SyncProgress::Notes {
+                    completed: position + 1,
+                    total: paths.len(),
+                });
                 continue;
             }
             let body = fs::read_to_string(&path)?;
@@ -296,24 +360,27 @@ impl SearchIndex {
                 .ok_or("Missing note title")?
                 .to_string_lossy();
             let path_text = relative.to_string_lossy();
-            worker
-                .writer
+            self.writer(writer)?
                 .delete_term(Term::from_field_text(self.fields.path, &path_text));
-            worker.writer.add_document(doc!(self.fields.path => path_text.as_ref(), self.fields.title => title.as_ref(),
+            self.writer(writer)?.add_document(doc!(self.fields.path => path_text.as_ref(), self.fields.title => title.as_ref(),
                 self.fields.exact => title.to_lowercase(), self.fields.body => body.as_str(), self.fields.checkpoints => checkpoints,
                 self.fields.source_len => before.len, self.fields.source_mtime => before.modified.as_str()))?;
             pending_bytes += body.len();
             worker.versions.insert(relative.clone(), before);
             report.updated += 1;
             if pending_bytes >= BATCH_BYTES {
-                worker.writer.commit()?;
+                self.writer(writer)?.commit()?;
                 pending_bytes = 0;
             }
+            progress(SyncProgress::Notes {
+                completed: position + 1,
+                total: paths.len(),
+            });
         }
         check(cancelled)?;
+        progress(SyncProgress::Finalizing);
         if report.updated + report.removed > 0 {
-            worker.writer.commit()?;
-            worker.reader.reload()?;
+            self.writer(writer)?.commit()?;
         }
         report.notes = worker.versions.len();
         Ok(report)

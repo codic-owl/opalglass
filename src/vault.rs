@@ -1,4 +1,5 @@
 use crate::markdown::{WikiLink, wiki_links};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -15,8 +16,8 @@ use std::{
 pub struct Note {
     pub path: PathBuf,
     pub title: String,
-    pub text: String,
     pub links: Vec<WikiLink>,
+    content_hash: [u8; 32],
     search_path: String,
     stamp: Option<Stamp>,
 }
@@ -46,13 +47,18 @@ impl Stamp {
 }
 
 impl Note {
+    /// Compare saved contents without keeping another copy of the note body.
+    /// Writes still compare the full disk text immediately before replacement.
+    pub fn matches_text(&self, text: &str) -> bool {
+        self.content_hash == <[u8; 32]>::from(Sha256::digest(text.as_bytes()))
+    }
     pub fn modified(&self) -> Option<SystemTime> {
         self.stamp.as_ref().and_then(|stamp| stamp.modified)
     }
     pub fn created(&self) -> Option<SystemTime> {
         self.stamp.as_ref().and_then(|stamp| stamp.created)
     }
-    fn new(path: PathBuf, text: String, stamp: Option<Stamp>) -> Self {
+    fn new(path: PathBuf, text: &str, stamp: Option<Stamp>) -> Self {
         Self {
             title: path
                 .file_stem()
@@ -60,9 +66,9 @@ impl Note {
                 .to_string_lossy()
                 .into_owned(),
             search_path: path.to_string_lossy().to_lowercase(),
-            links: wiki_links(&text),
+            links: wiki_links(text),
             path,
-            text,
+            content_hash: Sha256::digest(text.as_bytes()).into(),
             stamp,
         }
     }
@@ -152,18 +158,31 @@ impl Vault {
             indexes: Arc::default(),
             content_indexed: false,
         };
-        vault.scan(contents, cancelled)?;
+        vault.scan(contents, cancelled, &mut |_| {})?;
         Ok(vault)
     }
-    /// Reuse unchanged notes, including their parsed links and text allocations.
+    /// Reuse unchanged metadata and parsed links; bodies are read one at a time
+    /// and discarded after extracting links and a content fingerprint.
     /// Returns false when no files changed, so the UI need not redraw.
     pub fn refresh(&mut self) -> io::Result<bool> {
         self.refresh_cancellable(&AtomicBool::new(false))
     }
     pub fn refresh_cancellable(&mut self, cancelled: &AtomicBool) -> io::Result<bool> {
-        self.scan(true, cancelled)
+        self.refresh_with_progress(cancelled, |_| {})
     }
-    fn scan(&mut self, contents: bool, cancelled: &AtomicBool) -> io::Result<bool> {
+    pub fn refresh_with_progress(
+        &mut self,
+        cancelled: &AtomicBool,
+        mut progress: impl FnMut(usize),
+    ) -> io::Result<bool> {
+        self.scan(true, cancelled, &mut progress)
+    }
+    fn scan(
+        &mut self,
+        contents: bool,
+        cancelled: &AtomicBool,
+        progress: &mut impl FnMut(usize),
+    ) -> io::Result<bool> {
         fn visit(
             vault: &Vault,
             dir: &Path,
@@ -171,6 +190,7 @@ impl Vault {
             folders: &mut Vec<PathBuf>,
             contents: bool,
             cancelled: &AtomicBool,
+            progress: &mut impl FnMut(usize),
         ) -> io::Result<()> {
             for entry in fs::read_dir(dir)? {
                 check_cancelled(cancelled)?;
@@ -182,7 +202,7 @@ impl Vault {
                 let path = entry.path();
                 if kind.is_dir() {
                     folders.push(path.strip_prefix(&vault.root).unwrap().into());
-                    visit(vault, &path, notes, folders, contents, cancelled)?;
+                    visit(vault, &path, notes, folders, contents, cancelled, progress)?;
                 } else if kind.is_file()
                     && path
                         .extension()
@@ -190,7 +210,7 @@ impl Vault {
                 {
                     let relative = path.strip_prefix(&vault.root).unwrap();
                     if !contents {
-                        notes.push(Arc::new(Note::new(relative.into(), String::new(), None)));
+                        notes.push(Arc::new(Note::new(relative.into(), "", None)));
                         continue;
                     }
                     let stamp = Stamp::new(&entry.metadata()?);
@@ -200,8 +220,9 @@ impl Vault {
                         notes.push(vault.notes[index].clone());
                     } else {
                         let text = fs::read_to_string(&path)?;
-                        notes.push(Arc::new(Note::new(relative.into(), text, Some(stamp))));
+                        notes.push(Arc::new(Note::new(relative.into(), &text, Some(stamp))));
                     }
+                    progress(notes.len());
                 }
             }
             Ok(())
@@ -216,6 +237,7 @@ impl Vault {
             &mut folders,
             contents,
             cancelled,
+            progress,
         )?;
         folders.sort();
         notes.sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
@@ -281,7 +303,7 @@ impl Vault {
         // Revalidate a local write on the next scan. Sampling metadata after
         // replacement could accidentally cache a concurrent writer's timestamp
         // alongside our older text.
-        let note = Arc::new(Note::new(path.into(), text.into(), None));
+        let note = Arc::new(Note::new(path.into(), text, None));
         if let Some(&index) = self.indexes.paths.get(path) {
             // Saving an existing path cannot change name resolution or note
             // indices. Update only its outgoing edges, not the entire vault.
@@ -396,6 +418,85 @@ impl Vault {
         }
         Ok(full)
     }
+    fn trash_directory(&self, create: bool) -> io::Result<PathBuf> {
+        let dir = self.root.join(".trash");
+        if create {
+            match fs::create_dir(&dir) {
+                Ok(()) => (),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(e) => return Err(e),
+            }
+        }
+        let metadata = fs::symlink_metadata(&dir)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(invalid("The vault trash must be a real directory"));
+        }
+        Ok(dir)
+    }
+    /// Move an entire entry, including attachments, without following links or
+    /// rewriting references. Each operation keeps its original relative path.
+    pub fn trash_entry(&mut self, path: &Path) -> io::Result<()> {
+        let source = self.checked_entry(path)?;
+        let metadata = fs::symlink_metadata(&source)?;
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(invalid("Only files and folders can be moved to trash"));
+        }
+        let dir = self.trash_directory(true)?;
+        let stamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        let entry = tempfile::Builder::new()
+            .prefix(&format!("{stamp:039}-"))
+            .tempdir_in(&dir)?;
+        crate::state::write_json(&entry.path().join("original.json"), &path)?;
+        fs::rename(&source, entry.path().join("content"))?;
+        // Keep the payload even when later refreshes fail.
+        let _ = entry.keep();
+        self.refresh()?;
+        Ok(())
+    }
+    /// Restore the newest remaining deletion. Existing paths are never replaced.
+    pub fn restore_last_trashed(&mut self) -> io::Result<PathBuf> {
+        let dir = self.trash_directory(false)?;
+        let mut entries = fs::read_dir(&dir)?.collect::<io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+        for entry in entries {
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let payload = entry.path().join("content");
+            let metadata = match fs::symlink_metadata(&payload) {
+                Ok(metadata) => metadata,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(invalid("Trash contains a symlink"));
+            }
+            let manifest = entry.path().join("original.json");
+            if !fs::symlink_metadata(&manifest)?.is_file() {
+                return Err(invalid("Invalid trash record"));
+            }
+            let relative: PathBuf = serde_json::from_slice(&fs::read(manifest)?)?;
+            let destination = self.checked_entry(&relative)?;
+            let parent = destination
+                .parent()
+                .ok_or_else(|| invalid("Invalid original location"))?;
+            fs::create_dir_all(parent)?;
+            self.check_destination(&relative, None)?;
+            fs::rename(&payload, &destination)?;
+            // Leave only harmless metadata if cleanup fails; payload-less
+            // records are ignored on the next restore.
+            let _ = fs::remove_dir_all(entry.path());
+            self.refresh()?;
+            return Ok(relative);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No deleted files to restore",
+        ))
+    }
     pub fn create_folder(&mut self, name: &str) -> io::Result<PathBuf> {
         let path = Self::folder_path(name)?;
         let full = self.checked_entry(&path)?;
@@ -475,7 +576,7 @@ impl Vault {
         let mut edits = Vec::new();
         for note in self.notes.iter() {
             let new_path = moved_path(&note.path, from, to);
-            let mut text: Option<String> = None;
+            let mut edit: Option<(String, String)> = None;
             for link in note.links.iter().rev() {
                 let Some(target) = self.resolve(&note.path, &link.target) else {
                     continue;
@@ -508,13 +609,22 @@ impl Vault {
                     replacement.push('#');
                     replacement.push_str(heading);
                 }
-                let inner = &note.text[link.range.start + 2..link.range.end - 2];
+                if edit.is_none() {
+                    let baseline = self.read(&note.path)?;
+                    // Link ranges belong to the scanned contents. A racing edit
+                    // must not apply those ranges to different UTF-8 text.
+                    if !note.matches_text(&baseline) {
+                        return Err(invalid("A note changed while preparing the move; retry"));
+                    }
+                    edit = Some((baseline.clone(), baseline));
+                }
+                let (baseline, text) = edit.as_mut().unwrap();
+                let inner = &baseline[link.range.start + 2..link.range.end - 2];
                 let alias = inner.find('|').map(|i| &inner[i..]).unwrap_or("");
-                text.get_or_insert_with(|| note.text.clone())
-                    .replace_range(link.range.clone(), &format!("[[{replacement}{alias}]]"));
+                text.replace_range(link.range.clone(), &format!("[[{replacement}{alias}]]"));
             }
-            if let Some(text) = text {
-                edits.push((note.path.clone(), note.text.clone(), text));
+            if let Some((baseline, text)) = edit {
+                edits.push((note.path.clone(), baseline, text));
             }
         }
         // Preflight every file before any replacement. save() checks again at
@@ -537,7 +647,7 @@ impl Vault {
                 .map(|n| {
                     changed
                         .remove(&n.path)
-                        .map(|text| Arc::new(Note::new(n.path.clone(), text, None)))
+                        .map(|text| Arc::new(Note::new(n.path.clone(), &text, None)))
                         .unwrap_or_else(|| n.clone())
                 })
                 .collect(),
@@ -704,6 +814,7 @@ impl Vault {
             .map(|&index| self.notes[index].as_ref())
             .collect()
     }
+    /// Filename/path filtering only. Full-text queries belong to SearchIndex.
     pub fn search(&self, query: &str) -> Vec<&Note> {
         self.search_indices(query)
             .into_iter()
@@ -719,11 +830,7 @@ impl Vault {
             .iter()
             .enumerate()
             .take_while(|_| !cancelled.load(Ordering::Relaxed))
-            .filter(|(_, n)| {
-                query.is_empty()
-                    || n.search_path.contains(&query)
-                    || n.text.to_lowercase().contains(&query)
-            })
+            .filter(|(_, n)| query.is_empty() || n.search_path.contains(&query))
             .map(|(index, _)| index)
             .collect()
     }
@@ -745,6 +852,63 @@ pub fn moved_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trash_preserves_folders_attachments_links_and_restores_without_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Folder")).unwrap();
+        fs::write(dir.path().join("Folder/A.md"), "saved edits").unwrap();
+        fs::write(dir.path().join("Folder/photo.bin"), [0, 1, 255]).unwrap();
+        fs::write(dir.path().join("B.md"), "[[Folder/A]]").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+        vault.trash_entry(Path::new("Folder")).unwrap();
+        assert!(!dir.path().join("Folder").exists());
+        assert_eq!(vault.read(Path::new("B.md")).unwrap(), "[[Folder/A]]");
+        assert!(vault.resolve(Path::new("B.md"), "Folder/A").is_none());
+        assert!(vault.notes.iter().all(|n| !n.path.starts_with(".trash")));
+        // Trash survives a new Vault instance and refuses an occupied target.
+        let mut vault = Vault::open(dir.path()).unwrap();
+        fs::create_dir(dir.path().join("Folder")).unwrap();
+        assert!(vault.restore_last_trashed().is_err());
+        fs::remove_dir(dir.path().join("Folder")).unwrap();
+        assert_eq!(
+            vault.restore_last_trashed().unwrap(),
+            PathBuf::from("Folder")
+        );
+        assert_eq!(
+            fs::read(dir.path().join("Folder/photo.bin")).unwrap(),
+            vec![0, 1, 255]
+        );
+        assert_eq!(vault.read(Path::new("Folder/A.md")).unwrap(), "saved edits");
+        assert!(vault.resolve(Path::new("B.md"), "Folder/A").is_some());
+        assert!(vault.restore_last_trashed().is_err());
+        for invalid in ["", "..", "../outside", ".trash", "/tmp"] {
+            assert!(vault.trash_entry(Path::new(invalid)).is_err());
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn trash_rejects_symlinks_and_malicious_restore_records() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("A.md"), "note").unwrap();
+        symlink(outside.path(), dir.path().join(".trash")).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+        assert!(vault.trash_entry(Path::new("A.md")).is_err());
+        assert!(dir.path().join("A.md").exists());
+        fs::remove_file(dir.path().join(".trash")).unwrap();
+        vault.trash_entry(Path::new("A.md")).unwrap();
+        let entry = fs::read_dir(dir.path().join(".trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::write(entry.join("original.json"), "\"../outside.md\"").unwrap();
+        assert!(vault.restore_last_trashed().is_err());
+        assert!(entry.join("content").exists());
+    }
+
     #[test]
     fn updating_existing_note_changes_only_its_backlinks_and_preserves_snapshots() {
         let dir = tempfile::tempdir().unwrap();
@@ -806,7 +970,7 @@ mod tests {
             vault
                 .notes
                 .iter()
-                .all(|n| n.text.is_empty() && n.links.is_empty())
+                .all(|n| n.matches_text("") && n.links.is_empty())
         );
         assert!(vault.folders.contains(&PathBuf::from("Folder/Empty")));
         assert_eq!(
@@ -819,9 +983,21 @@ mod tests {
             vault.read(Path::new("Folder/Target.md")).unwrap(),
             "# Target"
         );
-        assert!(vault.refresh().unwrap());
+        let mut progress = Vec::new();
+        assert!(
+            vault
+                .refresh_with_progress(&AtomicBool::new(false), |count| progress.push(count))
+                .unwrap()
+        );
+        assert_eq!(progress, [1, 2]);
         assert!(vault.content_indexed());
-        assert_eq!(vault.search("needle in body").len(), 1);
+        assert!(vault.search("needle in body").is_empty());
+        assert!(
+            vault
+                .notes
+                .iter()
+                .any(|n| n.matches_text("[[Target]] [[Target]] needle in body"))
+        );
         assert_eq!(vault.backlinks(Path::new("Folder/Target.md")).len(), 1);
         assert!(!vault.refresh().unwrap());
     }
@@ -993,7 +1169,7 @@ mod tests {
         );
         assert_eq!(vault.backlinks(Path::new("New/Renamed/Note.md")).len(), 1);
         assert!(vault.folders.contains(&PathBuf::from("New/Renamed/Empty")));
-        assert_eq!(vault.search("Renamed").len(), 3);
+        assert_eq!(vault.search("Renamed").len(), 2);
     }
     #[test]
     fn move_note_preserves_local_targets_despite_destination_shadowing() {
@@ -1103,8 +1279,9 @@ mod tests {
         assert!(vault.refresh().unwrap());
         assert!(Arc::ptr_eq(&vault.notes[0], &snapshot.notes[0]));
         assert!(!Arc::ptr_eq(&vault.notes[1], &snapshot.notes[1]));
-        assert_eq!(vault.search("NEW BODY").len(), 1);
-        assert!(snapshot.search("NEW BODY").is_empty());
+        assert!(vault.notes[1].matches_text("new body with more text"));
+        assert!(snapshot.notes[1].matches_text("old body"));
+        assert!(!snapshot.notes[1].matches_text("new body with more text"));
         assert!(!vault.refresh().unwrap());
 
         fs::remove_file(temp.path().join("Source.md")).unwrap();
@@ -1150,18 +1327,20 @@ mod tests {
             .set_modified(modified)
             .unwrap();
         assert!(vault.refresh().unwrap());
-        assert_eq!(vault.notes[0].text, "after!");
+        assert!(vault.notes[0].matches_text("after!"));
+        assert!(!vault.notes[0].matches_text("before"));
     }
 
     #[test]
-    fn cancelled_search_stops_before_reading_note_bodies() {
+    fn path_filter_does_not_search_bodies_and_observes_cancellation() {
         let temp = tempfile::tempdir().unwrap();
         let mut vault = Vault::open(temp.path()).unwrap();
         vault.create("Note", "searchable").unwrap();
-        assert_eq!(vault.search_indices("SEARCHABLE"), vec![0]);
+        assert!(vault.search_indices("SEARCHABLE").is_empty());
+        assert_eq!(vault.search_indices("NOTE"), vec![0]);
         assert!(
             vault
-                .search_indices_cancellable("SEARCHABLE", &AtomicBool::new(true))
+                .search_indices_cancellable("NOTE", &AtomicBool::new(true))
                 .is_empty()
         );
     }
@@ -1216,7 +1395,8 @@ mod tests {
         assert_eq!(v.resolve(&a, "Other#Heading"), Some(b.clone()));
         assert_eq!(v.resolve(Path::new("Root.md"), "Other"), None);
         assert_eq!(v.backlinks(&b)[0].path, a);
-        assert_eq!(v.search("heading").len(), 1);
+        assert!(v.search("heading").is_empty());
+        assert_eq!(v.backlinks(&b)[0].links[0].target, "Other#Heading");
     }
     #[cfg(unix)]
     #[test]

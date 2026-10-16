@@ -6,11 +6,15 @@ use gpui::{prelude::*, *};
 use std::path::PathBuf;
 use workspace::Workspace;
 
+// Return temporary indexing allocations without relying on libc arena retention.
+#[global_allocator]
+static ALLOCATOR: opalglass::Allocator = opalglass::Allocator;
+
 fn main() {
     let arg = std::env::args_os().nth(1);
     if arg.as_deref().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "Opalglass — native Markdown workspace\n\nUsage: opalglass [VAULT_DIRECTORY]\n\nWith no directory, use Open vault in the app."
+            "Opalglass — native Markdown workspace\n\nUsage: opalglass [VAULT_DIRECTORY]\n\nWith no directory, reopen the last vault or use Open vault in the app."
         );
         return;
     }

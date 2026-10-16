@@ -16,7 +16,8 @@ the application's dependency versions are recorded in `Cargo.lock`.
 cargo run --locked -- /path/to/your/vault
 ```
 
-Or run `cargo run --locked` and choose **Open vault** (or press **Ctrl O**) to
+Without a path, the app reopens the last vault and its saved tabs. On first launch,
+run `cargo run --locked` and choose **Open vault** (or press **Ctrl O**) to
 browse for your vault folder. If the system folder picker is unavailable, a path
 entry dialog appears instead. The selected directory must already exist.
 The development profile optimizes the app and all runtime dependencies at
@@ -111,11 +112,60 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
   edits; dirty tabs stay intact and report a conflict.
 - Word count and cursor position.
 
-Saving is explicit with **Ctrl S**. Closing a tab/window, quitting via Ctrl Q,
-or switching vaults attempts to save dirty tabs and stops if a save fails.
-There is no crash recovery or automatic periodic saving yet. **Reload** asks
-before discarding unsaved edits. **Save copy** preserves the editor contents in a
-new file; a conflicting original tab still needs to be reloaded or resolved.
+Autosave is enabled by default and checks changed notes every three seconds.
+Writes run in the background with the same external-change checks as **Ctrl S**.
+Edits made during a write remain dirty until the next save. Closing a tab/window,
+quitting via Ctrl Q, or switching vaults saves dirty tabs and stops on a conflict.
+An in-flight automatic save must finish before closing or moving files.
+
+Unsaved snapshots are written durably outside the vault before automatic saves,
+including when autosave is disabled in Settings. Reopening restores those edits
+against their original disk baseline; external changes are never silently accepted
+as the baseline for recovered text. Recovery covers the most recent completed
+checkpoint, so edits since that checkpoint can still be lost in a crash.
+**Reload** asks before discarding unsaved edits. **Save copy** preserves editor
+contents separately when the original file conflicts.
+
+## Everyday workflows
+
+- **Find in note:** Ctrl F opens literal search with highlighted matches in Source,
+  Live Preview, and Reading. Enter / Shift Enter or F3 / Shift F3 move through
+  matches and wrap; Aa toggles case sensitivity. Ctrl P or Ctrl Shift F searches
+  the whole vault.
+- **Link completion:** type `[[` and a title, then use Up/Down and Enter/Tab, or
+  click a suggestion. Duplicate names display their paths; inserted links use
+  explicit vault-relative paths when necessary. Escape dismisses suggestions.
+- **Editing:** Enter continues bullet, numbered, and task lists; new tasks start
+  unchecked. Enter on an empty item exits the list. Tab / Shift Tab indent or
+  outdent list items and selected lines. Shift Enter inserts a plain newline.
+  Formatting shortcuts and commands preserve Markdown and undo history.
+- **Outline:** the outline icon or Ctrl Shift O opens clickable headings. Selecting
+  a heading jumps both the editor and reading pane to that section.
+- **Resume work:** per-vault tabs, their order, the active note, selections, and
+  editor/reading scroll positions are restored. Missing files are skipped unless
+  unsaved recovery data exists. Alt Left/Right, toolbar arrows, and mouse side
+  buttons navigate note history and restore positions; history lasts this session.
+- **Command palette:** Ctrl Shift P or the terminal-shaped rail icon searches
+  available actions. Use the keyboard or click a result.
+- **Bookmarks:** Ctrl Shift D toggles the current note's bookmark. The bookmark
+  rail icon opens the list. Bookmarks persist per vault and follow in-app moves.
+- **Daily notes:** Ctrl Alt D or the calendar icon opens `Daily/YYYY-MM-DD.md`
+  using the system's local date, creating it only when necessary. New daily notes
+  use `Templates/Daily.md` when present; existing notes and open edits are preserved.
+- **Templates:** place Markdown files under `Templates/`, then press Ctrl Alt T
+  or choose Insert template in the palette. The selected template replaces the
+  current selection as one undoable edit. Supported placeholders are `{{date}}`
+  (YYYY-MM-DD), `{{time}}` (HH:MM), and `{{title}}` (current note name).
+- **Settings:** the rail settings icon or Ctrl comma controls text size, source
+  line numbers, the default Source/Live Preview editing mode, and autosave.
+
+Right-click a file/folder and choose **Move to trash**, or press Delete with the
+explorer focused. Affected dirty tabs save first; conflicts block deletion. Entire
+folders, including attachments, move into the vault's hidden `.trash` directory.
+Incoming links remain and become unresolved. **Restore last deleted item** in the
+explorer menu restores the newest deletion to its original location, including
+after restarting, and refuses to replace an existing destination. There is no
+permanent-delete command or automatic trash expiry.
 
 External-change checking uses the complete last-read file contents, including a
 second check immediately before atomic replacement. It is optimistic concurrency,
@@ -144,8 +194,11 @@ are searched; unsaved edits enter the index after saving.
 Results arrive before excerpts. Only visible rows request snippets, reading at
 most 16 KiB from each original file. The index stores terms, positions, titles,
 paths and sparse byte-offset checkpoints, not a retrievable copy of note bodies.
-A bounded snippet cache validates source metadata before reuse. The bottom bar
-records Search (including a separate backend phase) and Search snippets timings.
+A vault scan retains only metadata, wiki links and content fingerprints; full
+note text is held by open tabs or read temporarily for indexing and link edits.
+A bounded snippet cache validates source metadata before reuse. In development
+builds, the bottom bar records Search (including a separate backend phase) and
+Search snippets timings.
 Typing has a 16 ms debounce; superseded queries and excerpts are discarded.
 
 On Linux the disposable search cache is under
@@ -154,6 +207,11 @@ also defined for Windows/macOS, although the desktop application currently targe
 Linux. Caches stay outside the vault. An unavailable, locked or incompatible cache
 falls back to a temporary session index. The app must finish its first index build
 before full-text search is available. Notes remain editable during that build.
+Indexing workers are created only for changed files and shut down after commits
+and merges finish. The cache stays reserved without keeping a writer alive.
+The app uses [mimalloc](https://github.com/microsoft/mimalloc) for Rust allocations
+to reduce memory retained after indexing. This uses the target's normal CPU
+baseline, with no machine-specific compiler flags or environment settings.
 Saves and moves synchronize the index in the background; external changes are
 picked up by the existing three-second refresh. A changed or missing source file
 never reuses a stale excerpt. Unix ctime additionally detects same-length changes
@@ -166,10 +224,22 @@ cargo run --release --locked --example native_search_profile -- /path/to/vault
 ```
 
 This opens notes without editing them, waits for indexing, searches exact and
-misspelled terms, scrolls results, prints native first-paint timings, and exits.
+misspelled terms, scrolls results, and exits. Use a development build (omit
+`--release`) to also print native first-paint timings.
 Keep the benchmark window visible. Cache and sidebar-state files may be written
 outside the vault; source notes are not changed. Backend tests use
 `cargo test --locked -p opalglass-search`; UI regressions use the existing harness.
+
+To audit backend memory independently of rendering:
+
+```sh
+cargo run --release --locked --example memory_profile -- /path/to/vault /tmp/opalglass-memory-cache
+```
+
+This reports live and peak Rust allocations after discovery, backlink scanning,
+indexing and teardown, plus process RSS on Linux. The first run builds the index;
+repeat with the same cache directory to measure reuse. Its allocation counter
+wraps the same allocator as the app and is confined to the diagnostic executable.
 
 ## Sidebar
 
@@ -232,7 +302,14 @@ Each tab has a close button, and middle-click also closes a tab. Closing saves
 that tab first; a save conflict leaves it open and focuses it. Closing a
 background tab preserves the active document.
 
-The bottom bar shows the latest action's time in milliseconds: opening notes or
+While indexing, the bottom bar shows **Indexing vault** with a compact progress
+bar. Hover to see the note count and current stage. It remains visible through
+the final commits and merges, then disappears when indexing finishes; cancelling
+or switching vaults removes the previous job's indicator. Progress updates only
+redraw the footer.
+
+In development builds (`cargo run`), the bottom bar also shows the latest
+action's time in milliseconds: opening notes or
 vaults, switching/reordering/closing tabs, saving edits, and changing views.
 Hover over the timing to see the last 20 entries and the latest action's phase
 breakdown; click it to copy the full log with paths and phases for every entry.
@@ -242,6 +319,7 @@ labeled explicitly.
 Timings run from the action handler to UI paint, including asynchronous loading
 and saving where applicable. They exclude GPU presentation and later background
 Markdown analysis or vault indexing. The history stays in memory for this session.
+Release builds omit the performance widget and its log history.
 
 These interactions follow Obsidian's documented
 [file explorer](https://obsidian.md/help/plugins/file-explorer),
@@ -263,10 +341,13 @@ history; other tabs retain their buffers. Existing destinations are never replac
 Failed moves attempt to roll back link edits without overwriting concurrent changes
 and report any incomplete rollback. Multi-file moves are not crash-atomic.
 
-Sidebar state is stored outside the vault under
+Workspace state, preferences, bookmarks, and recovery records are stored outside
+the vault. On Linux they live under
 `$XDG_STATE_HOME/opalglass/navigation`, falling back to
 `~/.local/state/opalglass/navigation`. Each canonical vault path has its own state.
-It is saved during the periodic refresh and on normal close or vault switch.
+Workspace state is saved during the periodic refresh and on normal close or vault
+switch. Windows/macOS state paths use LocalAppData/Application Support respectively;
+those desktop targets remain unverified.
 
 ## Shortcuts
 
@@ -279,7 +360,20 @@ It is saved during the periodic refresh and on normal close or vault switch.
 | Ctrl Shift B | Reveal active note and focus tree |
 | F2 | Rename tree selection / active note |
 | Shift F10 (tree focused) | Open context menu |
-| Ctrl P / Ctrl F | Focus vault search |
+| Ctrl P / Ctrl Shift F | Focus vault search |
+| Ctrl F | Find in current note |
+| Enter / Shift Enter (find focused), F3 / Shift F3 | Next / previous match |
+| Ctrl Shift P | Command palette |
+| Ctrl Shift O | Toggle heading outline |
+| Alt Left / Alt Right | Navigate back / forward |
+| Ctrl Shift D | Toggle bookmark |
+| Ctrl Alt D | Open today's daily note |
+| Ctrl Alt T | Insert template |
+| Ctrl comma | Settings |
+| Delete (tree focused) | Move selected entry to recoverable trash |
+| Ctrl Alt B / Ctrl Alt I / Ctrl Alt C | Bold / italic / inline code |
+| Ctrl Enter | Toggle task checkbox |
+| Tab / Shift Tab | Indent / outdent list item or selected lines |
 | Ctrl S | Save active note |
 | Ctrl Shift S | Save a copy |
 | Ctrl W | Save and close active tab |
@@ -377,9 +471,22 @@ so links are not marked missing just because their contents haven't been indexed
 Saving, creating, or moving a note supersedes stale indexing work. Switching
 vaults cancels the previous scan/index task, and partial or failed index results
 never replace the current snapshot. Rename/move still finishes a complete scan
-before updating wiki links. Later refreshes read only changed files. Search uses a persistent Tantivy index and does not scan the in-memory text.
-The existing vault/backlink model still reads and retains note bodies separately;
-this integration does not yet remove that memory cache. Search results are reused
+before updating wiki links. Later refreshes read only changed files. Search uses
+a persistent Tantivy index. The vault model discards bodies after extracting
+links and a SHA-256 fingerprint; moves read affected notes on demand and verify
+that the fingerprint still matches before applying cached link ranges.
+Search indexing uses up to two Tantivy workers on machines with at least four
+available CPUs, and one on smaller machines. Workers share a 32 MiB indexing
+budget; one merge worker and 16 MiB source batches keep memory bounded. This is
+an indexing-buffer budget, not a limit on total application RAM. All indexing
+workers are released after each update. A release backend benchmark on the
+4,425-note / 353 MiB vault averaged 12.4 s with two workers versus 14.8 s with
+one (two fresh-index runs each, warm filesystem cache). Four workers took 12.4 s
+in one run and used more memory. Backlink scanning adds
+about one second; these timings exclude UI startup. Reproduce fresh indexing
+timings with `cargo run --release --example indexing_profile -- /path/to/vault`;
+the example only reads the vault and removes its temporary search index on exit.
+Search results are reused
 until the query or vault changes. Notes use a contiguous text buffer, so inserting near
 the start of a large document still moves its suffix. Display row metadata is
 rebuilt after edits, but text shaping and preview layout are limited to visible
@@ -401,7 +508,8 @@ Undo retains up to 200 edits within a 32 MiB changed-text budget, always retaini
 the latest edit even if it exceeds that budget. Durable save/conflict checks
 still complete synchronously before close or quit. There is
 no Obsidian plugin compatibility, graph view, sync,
-attachment management, deletion UI, or session persistence yet.
+or attachment management yet. Templates use simple substitutions; there is no
+scripting engine or custom date-format syntax.
 
 Read-only performance measurements for a vault:
 
@@ -561,6 +669,9 @@ describes these optimization settings and their build-time tradeoffs.
 ## Layout and licensing
 
 - `src/buffer.rs`: Unicode text, selection, history, and composition model.
+- `src/editing.rs`: Markdown editing transactions and literal in-note matching.
+- `src/commands.rs`: command catalog, daily notes, and template substitutions.
+- `src/state.rs`: preferences and durable unsaved recovery records.
 - `src/document.rs`: normalization and preservation of line endings.
 - `src/vault.rs`: vault storage, paths, link resolution, conflict checks.
 - `crates/search`: persistent Tantivy index, ranking, typo correction and snippets.

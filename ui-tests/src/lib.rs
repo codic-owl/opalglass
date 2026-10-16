@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[global_allocator]
+static ALLOCATOR: opalglass::Allocator = opalglass::Allocator;
+
 // The GPUI test platform has extra dependencies, so the harness is a separate
 // package: the application and storage tests also build with a minimal cache.
 mod editor {
@@ -9,6 +12,28 @@ mod editor {
     mod tests {
         use super::{Editor, LINE};
         use gpui::{EntityInputHandler, Modifiers, TestAppContext, point, px};
+
+        #[gpui::test]
+        fn list_and_formatting_keys_are_undoable_in_source_and_live_preview(cx: &mut TestAppContext) {
+            let (view, cx) = cx.add_window_view(|w, cx| { let e = Editor::new("- [x] done", false, "", cx); e.focus.focus(w); e });
+            cx.simulate_keystrokes("ctrl-end enter");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "- [x] done\n- [ ] "));
+            cx.simulate_keystrokes("tab");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "- [x] done\n    - [ ] "));
+            cx.simulate_keystrokes("shift-tab enter");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "- [x] done\n"));
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "- [x] done\n- [ ] "));
+            view.update(cx, |e, cx| { e.set_text("éclair", cx); e.set_live_preview(true, cx); });
+            cx.simulate_keystrokes("ctrl-a ctrl-alt-b");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "**éclair**"));
+            cx.simulate_keystrokes("ctrl-z ctrl-alt-i");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "*éclair*"));
+            cx.simulate_keystrokes("ctrl-z ctrl-alt-c");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "`éclair`"));
+            cx.simulate_keystrokes("ctrl-z ctrl-enter");
+            view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), "- [ ] éclair"));
+        }
 
         #[gpui::test]
         fn live_preview_clicks_edit_source_and_preserve_ime_and_history(cx: &mut TestAppContext) {
@@ -288,6 +313,306 @@ mod workspace {
         use gpui::TestAppContext;
 
         #[gpui::test]
+        fn history_restores_positions_reopens_closed_notes_and_branches(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            for name in ["A.md", "B.md", "C.md"] {
+                std::fs::write(folder.path().join(name), "paragraph\n\n".repeat(400)).unwrap();
+            }
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, cx| this.tabs[0].editor.update(cx, |e, cx| e.restore_position(33, 36, opalglass::navigation::ScrollPosition {row: 200, offset: 2.}, cx)));
+            cx.run_until_parked();
+            view.update_in(cx, |this, w, cx| this.open_note("B.md".into(), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("alt-left");
+            view.read_with(cx, |this, cx| {
+                let tab = &this.tabs[this.active];
+                assert_eq!(tab.path, PathBuf::from("A.md"));
+                assert_eq!((tab.editor.read(cx).buffer.anchor(), tab.editor.read(cx).buffer.cursor()), (33, 36));
+                assert_eq!(tab.editor.read(cx).saved_scroll().row, 200);
+            });
+            cx.simulate_keystrokes("alt-right");
+            view.update_in(cx, |this, w, cx| { let a = this.tabs.iter().position(|t| t.path == PathBuf::from("A.md")).unwrap(); this.close_tab_at(a, w, cx); });
+            cx.simulate_keystrokes("alt-left");
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[this.active].path, PathBuf::from("A.md"));
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.cursor(), 36);
+            });
+            let point = cx.debug_bounds("tabs").map(|b| b.center()).unwrap_or(gpui::point(gpui::px(400.), gpui::px(15.)));
+            cx.simulate_mouse_down(point, gpui::MouseButton::Navigate(gpui::NavigationDirection::Forward), gpui::Modifiers::default());
+            view.read_with(cx, |this, _| assert_eq!(this.tabs[this.active].path, PathBuf::from("B.md")));
+            cx.simulate_keystrokes("alt-left");
+            view.update_in(cx, |this, w, cx| this.open_note("C.md".into(), w, cx));
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| assert!(this.history_forward.is_empty()));
+        }
+
+        #[gpui::test]
+        fn command_palette_bookmarks_daily_notes_and_templates(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            std::fs::create_dir(folder.path().join("Templates")).unwrap();
+            std::fs::write(folder.path().join("A.md"), "Alpha").unwrap();
+            std::fs::write(folder.path().join("B.md"), "Beta").unwrap();
+            std::fs::write(folder.path().join("Templates/Meeting.md"), "# {{title}}\nDate: {{date}} at {{time}}\n- [ ] Follow up\n").unwrap();
+            std::fs::write(folder.path().join("Templates/Daily.md"), "# {{date}}\nDaily template\n").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, _| this.state_directory = Some(state.path().into()));
+            cx.simulate_keystrokes("ctrl-a ctrl-shift-p");
+            view.read_with(cx, |this, _| assert!(this.picker == Some(super::PickerMode::Commands)));
+            cx.simulate_input("format bold");
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.input.read(cx).buffer.text(), "format bold");
+                assert_eq!(this.picker_items.len(), 1);
+                assert_eq!(this.picker_items[0].title, "Format: bold");
+            });
+            cx.simulate_keystrokes("enter");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "**Alpha**"));
+            cx.simulate_keystrokes("ctrl-z ctrl-shift-d");
+            view.read_with(cx, |this, _| {
+                assert_eq!(this.navigation.bookmarks, vec![PathBuf::from("A.md")]);
+                assert_eq!(opalglass::navigation::State::load(state.path(), &this.vault.as_ref().unwrap().root).bookmarks, this.navigation.bookmarks);
+            });
+            view.update_in(cx, |this, w, cx| this.open_note("B.md".into(), w, cx));
+            cx.run_until_parked();
+            click(cx, "bookmarks");
+            click(cx, "picker-option-0");
+            view.read_with(cx, |this, _| assert_eq!(this.tabs[this.active].path, PathBuf::from("A.md")));
+            cx.simulate_keystrokes("ctrl-end ctrl-alt-t");
+            cx.simulate_input("meeting");
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                let text = this.tabs[this.active].editor.read(cx).buffer.text();
+                assert!(text.contains("# A\nDate: "));
+                assert!(!text.contains("{{"));
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "Alpha"));
+            cx.simulate_keystrokes("ctrl-alt-d");
+            cx.run_until_parked();
+            let path = view.read_with(cx, |this, cx| {
+                let tab = &this.tabs[this.active];
+                assert!(tab.path.starts_with("Daily"));
+                assert!(tab.editor.read(cx).buffer.text().contains("Daily template"));
+                tab.path.clone()
+            });
+            cx.simulate_keystrokes("ctrl-end");
+            cx.simulate_input("Keep my edits");
+            cx.simulate_keystrokes("ctrl-alt-d");
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[this.active].path, path);
+                assert!(this.tabs[this.active].editor.read(cx).buffer.text().ends_with("Keep my edits"));
+                assert_eq!(this.tabs.iter().filter(|t| t.path == path).count(), 1);
+            });
+        }
+
+        #[gpui::test]
+        fn periodic_autosave_preserves_edits_during_write_and_conflicts(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "original").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, _| this.state_directory = Some(state.path().into()));
+            cx.simulate_keystrokes("ctrl-end");
+            cx.simulate_input(" first");
+            cx.executor().advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "original first");
+            view.read_with(cx, |this, cx| assert!(!this.tabs[0].dirty(cx)));
+            cx.simulate_input(" second");
+            view.update(cx, |this, cx| {
+                this.checkpoint(cx);
+                this.tabs[0].editor.update(cx, |e, cx| { e.buffer.insert(" newer"); cx.notify(); });
+            });
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "original first second");
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[0].editor.read(cx).buffer.text(), "original first second newer");
+                assert!(this.tabs[0].dirty(cx));
+            });
+            std::fs::write(folder.path().join("A.md"), "external version").unwrap();
+            view.update(cx, |this, cx| this.checkpoint(cx));
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "external version");
+            view.read_with(cx, |this, cx| {
+                assert!(this.error);
+                assert!(this.tabs[0].dirty(cx));
+                let recovery = opalglass::state::Recovery::load(state.path(), &this.vault.as_ref().unwrap().root, std::path::Path::new("A.md")).unwrap().unwrap();
+                assert_eq!(recovery.text, "original first second newer");
+            });
+        }
+
+        #[gpui::test]
+        fn autosave_off_recovery_survives_restart_and_reload_discards_it(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "original").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            view.update(cx, |this, _| { this.state_directory = Some(state.path().into()); this.preferences.autosave = false; });
+            cx.simulate_keystrokes("ctrl-end");
+            cx.simulate_input(" unsaved");
+            view.update(cx, |this, cx| { this.persist_navigation(cx); this.checkpoint(cx); });
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "original");
+            view.update_in(cx, |this, w, cx| {
+                let vault = opalglass::vault::Vault::open(folder.path()).unwrap();
+                let saved = opalglass::navigation::State::load(state.path(), &vault.root);
+                this.finish_open(Ok((vault, saved)), w, cx);
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[0].editor.read(cx).buffer.text(), "original unsaved");
+                assert!(this.tabs[0].dirty(cx));
+            });
+            view.update(cx, |this, cx| this.reload_tab(0, cx));
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[0].editor.read(cx).buffer.text(), "original");
+                assert!(opalglass::state::Recovery::load(state.path(), &this.vault.as_ref().unwrap().root, std::path::Path::new("A.md")).unwrap().is_none());
+            });
+        }
+
+        #[gpui::test]
+        fn explorer_trash_saves_dirty_note_restores_and_blocks_conflict(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "original").unwrap();
+            std::fs::write(folder.path().join("B.md"), "[[A]]").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-end");
+            cx.simulate_input(" saved on delete");
+            right_click(cx, "entry:A.md");
+            click(cx, "explorer-action-2");
+            view.read_with(cx, |this, _| assert!(this.modal == super::Modal::Delete));
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+            assert!(!folder.path().join("A.md").exists());
+            view.read_with(cx, |this, _| assert!(this.tabs.is_empty()));
+            right_click_explorer_space(cx);
+            click(cx, "explorer-action-2"); // New note, New folder, Restore.
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "original saved on delete");
+            view.update_in(cx, |this, w, cx| this.open_note("A.md".into(), w, cx));
+            cx.run_until_parked();
+            cx.simulate_input("unsaved");
+            std::fs::write(folder.path().join("A.md"), "external").unwrap();
+            right_click(cx, "entry:A.md");
+            click(cx, "explorer-action-2");
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+            assert_eq!(std::fs::read_to_string(folder.path().join("A.md")).unwrap(), "external");
+            view.read_with(cx, |this, cx| { assert!(this.tabs[0].dirty(cx)); assert!(this.error); });
+        }
+
+        #[gpui::test]
+        fn note_find_outline_and_preferences_work_through_controls(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let text = "# One\nAlpha éclair ALPHA\n\n## Two\nAlpha again\n";
+            std::fs::write(folder.path().join("A.md"), text).unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("ctrl-f");
+            cx.simulate_input("alpha");
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.find.matches.len(), 3);
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.selected(), "Alpha");
+                assert!(this.search.read(cx).buffer.text().is_empty());
+            });
+            cx.simulate_keystrokes("enter enter enter");
+            view.read_with(cx, |this, _| assert_eq!(this.find.selected, Some(0)));
+            cx.simulate_keystrokes("shift-enter");
+            view.read_with(cx, |this, _| assert_eq!(this.find.selected, Some(2)));
+            cx.simulate_keystrokes("escape ctrl-shift-o");
+            cx.run_until_parked();
+            click(cx, "outline-heading-1");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.cursor(), text.find("## Two").unwrap()));
+            view.update(cx, |this, _| this.state_directory = Some(state.path().into()));
+            cx.simulate_keystrokes("ctrl-,");
+            click(cx, "font-larger");
+            click(cx, "setting-line-numbers");
+            click(cx, "setting-default-editor");
+            cx.simulate_keystrokes("escape");
+            view.read_with(cx, |this, cx| {
+                assert!(!this.settings_open);
+                assert_eq!(this.preferences.font_size, 15.);
+                assert!(!this.tabs[this.active].editor.read(cx).line_numbers);
+                assert_eq!(opalglass::state::Preferences::load(state.path()), this.preferences);
+            });
+        }
+
+        #[gpui::test]
+        fn link_completion_inserts_resolvable_target_and_undo(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::create_dir(folder.path().join("Nested")).unwrap();
+            for (path, text) in [("A.md", ""), ("Target.md", "root"), ("Nested/Target.md", "nested")] {
+                std::fs::write(folder.path().join(path), text).unwrap();
+            }
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            cx.simulate_input("[[Tar");
+            cx.run_until_parked();
+            view.read_with(cx, |this, _| assert_eq!(this.completion.candidates.len(), 2));
+            // Choose the nested duplicate by mouse: it must not resolve to the root note.
+            let i = view.read_with(cx, |this, _| this.completion.candidates.iter().position(|(p,_)| p == &PathBuf::from("Nested/Target.md")).unwrap());
+            click(cx, if i == 0 { "link-option-0" } else { "link-option-1" });
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "[[/Nested/Target]]");
+            });
+            cx.simulate_keystrokes("ctrl-z");
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[this.active].editor.read(cx).buffer.text(), "[[Tar"));
+            cx.run_until_parked();
+            cx.simulate_keystrokes("down enter");
+            view.read_with(cx, |this, cx| assert!(this.tabs[this.active].editor.read(cx).buffer.text().ends_with("]]")));
+        }
+
+        #[gpui::test]
+        fn session_restores_order_active_selection_and_scroll_skipping_missing(cx: &mut TestAppContext) {
+            let folder = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            for name in ["A.md", "B.md", "C.md"] {
+                std::fs::write(folder.path().join(name), "# Heading\n\nParagraph with words\n\n".repeat(500)).unwrap();
+            }
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            for name in ["B.md", "C.md"] {
+                view.update_in(cx, |this, w, cx| this.open_note(name.into(), w, cx));
+                cx.run_until_parked();
+            }
+            view.update_in(cx, |this, w, cx| {
+                this.activate_tab(1, w, cx);
+                this.state_directory = Some(state.path().into());
+                this.tabs[1].editor.update(cx, |e, cx| e.restore_position(14, 20, opalglass::navigation::ScrollPosition {row: 420, offset: 3.}, cx));
+                this.tabs[1].preview_scroll.scroll_to(gpui::ListOffset { item_ix: 250, offset_in_item: gpui::px(2.) });
+            });
+            cx.run_until_parked();
+            let saved = view.update(cx, |this, cx| { this.persist_navigation(cx); this.navigation.clone() });
+            assert_eq!(saved.tabs[1].source.row, 420);
+            std::fs::remove_file(folder.path().join("C.md")).unwrap();
+            view.update_in(cx, |this, w, cx| {
+                let vault = opalglass::vault::Vault::open(folder.path()).unwrap();
+                let saved = opalglass::navigation::State::load(state.path(), &vault.root);
+                this.finish_open(Ok((vault, saved)), w, cx);
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |this, cx| {
+                assert_eq!(this.tabs.iter().map(|t| t.path.clone()).collect::<Vec<_>>(), vec![PathBuf::from("A.md"), PathBuf::from("B.md")]);
+                assert_eq!(this.active, 1);
+                let editor = this.tabs[1].editor.read(cx);
+                assert_eq!((editor.buffer.anchor(), editor.buffer.cursor()), (14, 20));
+                assert_eq!(editor.saved_scroll(), saved.tabs[1].source);
+                assert_eq!(this.tabs[1].preview_scroll.logical_scroll_top().item_ix, saved.tabs[1].preview.row);
+            });
+        }
+
+        #[gpui::test]
         fn discovered_vault_is_editable_and_pending_search_completes_after_indexing(
             cx: &mut TestAppContext,
         ) {
@@ -316,7 +641,7 @@ mod workspace {
                         .unwrap()
                         .notes
                         .iter()
-                        .all(|n| n.text.is_empty())
+                        .all(|n| n.matches_text(""))
                 );
                 assert_eq!(
                     this.tabs[this.active].editor.read(cx).buffer.text(),
@@ -390,10 +715,7 @@ mod workspace {
             assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
             view.read_with(cx, |this, cx| {
                 assert!(this.vault.as_ref().unwrap().content_indexed());
-                assert_eq!(
-                    this.vault.as_ref().unwrap().notes[0].text,
-                    "saved during indexing"
-                );
+                assert!(this.vault.as_ref().unwrap().notes[0].matches_text("saved during indexing"));
                 assert_eq!(
                     this.tabs[0].editor.read(cx).buffer.text(),
                     "saved during indexing"
@@ -653,6 +975,57 @@ mod workspace {
             view.read_with(cx, |this, _| assert!(!this.error, "{}", this.status));
         }
 
+        #[gpui::test]
+        fn indexing_footer_tracks_progress_without_redrawing_notes_and_hides_on_cancel(cx: &mut TestAppContext) {
+            use super::VaultIndexProgress;
+            use opalglass::search::SyncProgress;
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(folder.path().join("A.md"), "# Note\nBody").unwrap();
+            let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("indexing-vault").is_none());
+            view.update(cx, |this, cx| {
+                this.indexing = true;
+                this.indexing_bar.update(cx, |bar, cx| {
+                    bar.progress = VaultIndexProgress::Reading { completed: 0, total: 10 };
+                    cx.notify();
+                });
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("indexing-vault").unwrap().size.width, gpui::px(180.));
+            let renders = view.read_with(cx, |this, cx| this.tabs[0].editor.read(cx).render_count);
+            view.update(cx, |this, cx| this.indexing_bar.update(cx, |bar, cx| {
+                bar.progress = VaultIndexProgress::Search(SyncProgress::Notes { completed: 5, total: 10 });
+                cx.notify();
+            }));
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("indexing-progress-fill").unwrap().size.width, gpui::px(32.));
+            view.read_with(cx, |this, cx| assert_eq!(this.tabs[0].editor.read(cx).render_count, renders));
+            view.update(cx, |this, cx| this.indexing_bar.update(cx, |bar, cx| {
+                bar.progress = VaultIndexProgress::Search(SyncProgress::Finalizing);
+                assert!(bar.progress.fraction() < 1.);
+                assert_eq!(bar.progress.detail(), "Finishing search index…");
+                cx.notify();
+            }));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("indexing-vault").is_some());
+            view.update(cx, |this, cx| {
+                this.cancel_indexing();
+                this.index_revision = this.revision;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            // GPUI retains removed debug selectors in its frame map; inspect
+            // visibility state here and verify the disappearing footer natively.
+            view.read_with(cx, |this, _| {
+                assert!(!this.indexing);
+                assert!(this._index_progress.is_none());
+            });
+            assert!(VaultIndexProgress::Reading { completed: 0, total: 0 }.fraction().is_finite());
+        }
+
+        #[cfg(debug_assertions)]
         #[gpui::test]
         fn performance_bar_logs_actions_once_and_copies_bounded_history(cx: &mut TestAppContext) {
             let folder = tempfile::tempdir().unwrap();
@@ -1102,7 +1475,7 @@ mod workspace {
                 assert!(offset.y < gpui::px(-100.));
                 offset
             });
-            cx.simulate_keystrokes("ctrl-f");
+            cx.simulate_keystrokes("ctrl-p");
             cx.simulate_input("Note0001");
             cx.executor()
                 .advance_clock(std::time::Duration::from_millis(150));

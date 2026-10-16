@@ -9,6 +9,120 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 struct Fixture(PathBuf);
+
+#[test]
+fn indexing_workers_leave_cpu_capacity_and_share_a_bounded_budget() {
+    for (cpus, expected) in [(1, 1), (2, 1), (3, 1), (4, 2), (14, 2), (128, 2)] {
+        let workers = crate::indexing_worker_count(cpus);
+        assert_eq!(workers, expected);
+        // Tantivy requires at least 15,000,000 bytes per worker.
+        assert!(crate::WRITER_MEMORY_BYTES / workers >= 15_000_000);
+        assert_eq!(crate::WRITER_MEMORY_BYTES, 32 * 1024 * 1024);
+    }
+}
+
+#[test]
+fn cancellation_with_queued_documents_rolls_back_and_retries_without_duplicates() -> Result<()> {
+    use crate::SyncProgress;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = Fixture::new()?;
+    let mut paths = vec![];
+    for i in 0..48 {
+        let title = format!("Note {i}");
+        fixture.note(&title, &"quasar nebula constellation ".repeat(1024))?;
+        paths.push(PathBuf::from(format!("{title}.md")));
+    }
+    let index = SearchIndex::open(&fixture.0.join("vault"), None)?;
+    let old = index.snapshot()?;
+    let cancelled = AtomicBool::new(false);
+    assert!(
+        index
+            .synchronize_with_progress(&paths, &cancelled, |p| {
+                if matches!(p, SyncProgress::Notes { completed: 32, .. }) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .is_err()
+    );
+    assert_eq!(index.snapshot()?.searcher.num_docs(), 0);
+    cancelled.store(false, Ordering::Relaxed);
+    let report = index.synchronize(&paths, &cancelled)?;
+    assert_eq!(report.updated, paths.len());
+    let engine = index.snapshot()?;
+    assert_eq!(engine.searcher.num_docs(), paths.len() as u64);
+    let ticket = Requests::default().begin();
+    assert_eq!(
+        engine.search("\"quasar\"", &ticket)?.hits.len(),
+        paths.len()
+    );
+    assert!(old.search("\"quasar\"", &ticket)?.hits.is_empty());
+    assert_eq!(index.synchronize(&paths, &cancelled)?.updated, 0);
+    Ok(())
+}
+
+#[test]
+fn progress_counts_processed_notes_and_never_completes_failed_updates() -> Result<()> {
+    use crate::SyncProgress;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = Fixture::new()?;
+    fixture.note("A", "one")?;
+    fixture.note("B", "two")?;
+    let paths = [PathBuf::from("A.md"), PathBuf::from("B.md")];
+    let index = SearchIndex::open(&fixture.0.join("vault"), None)?;
+    for updated in [2, 0] {
+        let mut events = Vec::new();
+        assert_eq!(
+            index
+                .synchronize_with_progress(&paths, &AtomicBool::new(false), |p| events.push(p))?
+                .updated,
+            updated
+        );
+        assert_eq!(
+            events,
+            vec![
+                SyncProgress::Notes {
+                    completed: 0,
+                    total: 2
+                },
+                SyncProgress::Notes {
+                    completed: 1,
+                    total: 2
+                },
+                SyncProgress::Notes {
+                    completed: 2,
+                    total: 2
+                },
+                SyncProgress::Finalizing,
+                SyncProgress::Complete,
+            ]
+        );
+    }
+    let cancelled = AtomicBool::new(false);
+    let mut events = Vec::new();
+    assert!(
+        index
+            .synchronize_with_progress(&paths, &cancelled, |p| {
+                events.push(p);
+                if matches!(p, SyncProgress::Notes { completed: 1, .. }) {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            })
+            .is_err()
+    );
+    assert!(!events.contains(&SyncProgress::Complete));
+    fs::remove_file(fixture.0.join("vault/B.md"))?;
+    events.clear();
+    assert!(
+        index
+            .synchronize_with_progress(&paths, &AtomicBool::new(false), |p| events.push(p))
+            .is_err()
+    );
+    assert!(!events.contains(&SyncProgress::Complete));
+    events.clear();
+    index.synchronize_with_progress(&[], &AtomicBool::new(false), |p| events.push(p))?;
+    assert_eq!(events.last(), Some(&SyncProgress::Complete));
+    Ok(())
+}
 impl Fixture {
     fn new() -> Result<Self> {
         let path = std::env::temp_dir().join(format!(
@@ -427,6 +541,44 @@ fn cache_conflicts_are_isolated_and_cache_never_written_inside_vault() -> Result
     assert!(first.persistent);
     assert!(!second.persistent);
     assert_ne!(first.directory, second.directory);
+    Ok(())
+}
+
+#[test]
+fn synchronization_releases_writer_but_keeps_cache_reserved() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.note("A", "A quasar shines.")?;
+    let root = fixture.0.join("vault");
+    let cache = fixture.0.join("cache");
+    let index = SearchIndex::open(&root, Some(&cache))?;
+    let paths = [PathBuf::from("A.md")];
+    for expected_updates in [1, 0] {
+        assert_eq!(
+            index
+                .synchronize(&paths, &std::sync::atomic::AtomicBool::new(false))?
+                .updated,
+            expected_updates
+        );
+        // A retained Tantivy writer would hold this lock and fail the probe.
+        let probe = index
+            .index
+            .writer_with_options::<tantivy::TantivyDocument>(
+                tantivy::indexer::IndexWriterOptions::builder()
+                    .num_worker_threads(1)
+                    .memory_budget_per_thread(16 * 1024 * 1024)
+                    .build(),
+            )?;
+        probe.wait_merging_threads()?;
+        assert!(!SearchIndex::open(&root, Some(&cache))?.persistent);
+    }
+    let old = index.snapshot()?;
+    fixture.note("A", "A nebula glows.")?;
+    index.synchronize(&paths, &std::sync::atomic::AtomicBool::new(false))?;
+    let ticket = Requests::default().begin();
+    assert_eq!(old.search("quasar", &ticket)?.hits.len(), 1);
+    assert_eq!(index.snapshot()?.search("nebula", &ticket)?.hits.len(), 1);
+    drop(index);
+    assert!(SearchIndex::open(&root, Some(&cache))?.persistent);
     Ok(())
 }
 

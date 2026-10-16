@@ -1,4 +1,6 @@
 //! Read-only measurements against a real or generated vault.
+#[global_allocator]
+static ALLOCATOR: opalglass::Allocator = opalglass::Allocator;
 use opalglass::{
     search::{Requests, SearchIndex, Snippets},
     vault::Vault,

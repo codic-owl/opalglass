@@ -149,6 +149,21 @@ impl Tree {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ScrollPosition {
+    pub row: usize,
+    pub offset: f32,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SessionTab {
+    pub path: PathBuf,
+    pub cursor: usize,
+    pub anchor: usize,
+    pub source: ScrollPosition,
+    pub preview: ScrollPosition,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct State {
@@ -159,6 +174,10 @@ pub struct State {
     pub hidden: bool,
     pub sort: SortOrder,
     pub auto_reveal: bool,
+    pub session_initialized: bool,
+    pub tabs: Vec<SessionTab>,
+    pub active_tab: Option<PathBuf>,
+    pub bookmarks: Vec<PathBuf>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -170,6 +189,10 @@ impl Default for State {
             hidden: false,
             sort: SortOrder::default(),
             auto_reveal: false,
+            session_initialized: false,
+            tabs: Vec::new(),
+            active_tab: None,
+            bookmarks: Vec::new(),
         }
     }
 }
@@ -189,6 +212,14 @@ impl State {
         } else {
             0.
         };
+        for tab in &mut state.tabs {
+            for scroll in [&mut tab.source, &mut tab.preview] {
+                if !scroll.offset.is_finite() {
+                    scroll.offset = 0.;
+                }
+                scroll.offset = scroll.offset.max(0.);
+            }
+        }
         state
     }
     pub fn save(&self, directory: &Path, root: &Path) -> io::Result<()> {
@@ -220,10 +251,17 @@ fn state_file(directory: &Path, root: &Path) -> PathBuf {
     directory.join(format!("{hash:016x}.json"))
 }
 pub fn state_directory() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state")))
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|p| PathBuf::from(p).join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state")))
+    };
+    base.filter(|p| p.is_absolute())
         .map(|p| p.join("opalglass/navigation"))
 }
 

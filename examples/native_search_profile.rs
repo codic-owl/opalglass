@@ -1,4 +1,6 @@
 //! Read-only search exercise in a real GPUI window. No source notes are edited.
+#[global_allocator]
+static ALLOCATOR: opalglass::Allocator = opalglass::Allocator;
 #[path = "../src/editor.rs"]
 mod editor;
 #[path = "../src/theme.rs"]
@@ -105,6 +107,7 @@ mod workspace {
                             .last()
                             .is_some_and(|r| r.snippet.is_some())
                     );
+                    #[cfg(debug_assertions)]
                     println!("{}", this.performance.read(cx).log_text());
                     cx.quit();
                 });
