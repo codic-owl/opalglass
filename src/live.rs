@@ -65,12 +65,11 @@ impl Line {
                     line.mapping = vec![source.len()];
                 }
                 return line;
-            } else if trimmed.starts_with("- [ ] ") {
-                skip = indent + 6;
-                prefix = "☐  ";
-            } else if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
-                skip = indent + 6;
-                prefix = "☑  ";
+            } else if let Some(list) = crate::editing::list_prefix(source)
+                && let Some(done) = list.task
+            {
+                skip = list.end;
+                prefix = if done { "☑  " } else { "☐  " };
             } else if ["- ", "* ", "+ "].iter().any(|p| trimmed.starts_with(p)) {
                 skip = indent + 2;
                 prefix = "•  ";

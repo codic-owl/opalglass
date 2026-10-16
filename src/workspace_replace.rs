@@ -161,25 +161,8 @@ impl Workspace {
             let (vault, applied, error) = cx
                 .background_executor()
                 .spawn(async move {
-                    // Check every selected snapshot before the first write. Each
-                    // write rechecks again against races during this operation.
-                    for plan in &selected {
-                        if let Err(error) = plan.validate(&vault) {
-                            return (vault, 0, Some(error));
-                        }
-                    }
-                    let mut applied = 0;
-                    for plan in selected {
-                        if let Err(error) = plan.apply(&mut vault) {
-                            return (
-                                vault,
-                                applied,
-                                Some(format!("{}: {error}", plan.path.display())),
-                            );
-                        }
-                        applied += 1;
-                    }
-                    (vault, applied, None)
+                    let (applied, error) = opalglass::changes::apply_batch(&mut vault, &selected);
+                    (vault, applied, error)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -190,7 +173,7 @@ impl Workspace {
                 let failed = error.is_some();
                 let message = match error {
                     Some(error) => format!("Applied to {applied} note(s); stopped: {error}"),
-                    None => format!("Replacements applied to {applied} note(s)."),
+                    None => format!("Replacements applied to {applied} note(s). Undo is available in the command palette."),
                 };
                 if let Some(panel) = &mut this.replace_panel {
                     panel.preview_key = None;

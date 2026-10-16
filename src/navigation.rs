@@ -47,7 +47,12 @@ pub struct Entry {
 }
 impl Entry {
     pub fn name(&self) -> String {
-        let name = if self.folder {
+        let name = if self.folder
+            || !self
+                .path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
             self.path.file_name()
         } else {
             self.path.file_stem()
@@ -68,6 +73,7 @@ impl Tree {
             .iter()
             .map(|p| (p, true))
             .chain(vault.notes.iter().map(|n| (&n.path, false)))
+            .chain(vault.files.iter().map(|p| (p, false)))
         {
             self.children
                 .entry(path.parent().unwrap_or(Path::new("")).into())

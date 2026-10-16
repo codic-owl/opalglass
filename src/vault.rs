@@ -1,4 +1,4 @@
-use crate::markdown::{WikiLink, wiki_links};
+use crate::markdown::WikiLink;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -18,6 +18,7 @@ pub struct Note {
     pub title: String,
     pub links: Vec<WikiLink>,
     pub tags: Vec<String>,
+    pub references: Vec<crate::links::Reference>,
     content_hash: [u8; 32],
     search_path: String,
     stamp: Option<Stamp>,
@@ -70,6 +71,7 @@ impl Note {
         self.stamp.as_ref().and_then(|stamp| stamp.created)
     }
     fn new(path: PathBuf, text: &str, stamp: Option<Stamp>) -> Self {
+        let analysis = crate::links::analyze(text);
         Self {
             title: path
                 .file_stem()
@@ -77,8 +79,9 @@ impl Note {
                 .to_string_lossy()
                 .into_owned(),
             search_path: path.to_string_lossy().to_lowercase(),
-            links: wiki_links(text),
-            tags: crate::markdown::tags(text),
+            links: analysis.wiki_links,
+            tags: analysis.tags,
+            references: analysis.references,
             path,
             content_hash: Sha256::digest(text.as_bytes()).into(),
             stamp,
@@ -91,6 +94,7 @@ struct Indexes {
     paths: HashMap<PathBuf, usize>,
     titles: HashMap<String, Option<usize>>,
     incoming: HashMap<PathBuf, Vec<usize>>,
+    references: crate::links::Resolver,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +102,8 @@ pub struct Vault {
     pub root: PathBuf,
     pub notes: Arc<Vec<Arc<Note>>>,
     pub folders: Arc<Vec<PathBuf>>,
+    /// Visible non-Markdown files, indexed by path without loading their bodies.
+    pub files: Arc<Vec<PathBuf>>,
     indexes: Arc<Indexes>,
     content_indexed: bool,
 }
@@ -167,6 +173,7 @@ impl Vault {
             root,
             notes: Arc::default(),
             folders: Arc::default(),
+            files: Arc::default(),
             indexes: Arc::default(),
             content_indexed: false,
         };
@@ -195,11 +202,16 @@ impl Vault {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(usize),
     ) -> io::Result<bool> {
+        #[derive(Default)]
+        struct Entries {
+            notes: Vec<Arc<Note>>,
+            folders: Vec<PathBuf>,
+            files: Vec<PathBuf>,
+        }
         fn visit(
             vault: &Vault,
             dir: &Path,
-            notes: &mut Vec<Arc<Note>>,
-            folders: &mut Vec<PathBuf>,
+            entries: &mut Entries,
             contents: bool,
             cancelled: &AtomicBool,
             progress: &mut impl FnMut(usize),
@@ -213,8 +225,10 @@ impl Vault {
                 }
                 let path = entry.path();
                 if kind.is_dir() {
-                    folders.push(path.strip_prefix(&vault.root).unwrap().into());
-                    visit(vault, &path, notes, folders, contents, cancelled, progress)?;
+                    entries
+                        .folders
+                        .push(path.strip_prefix(&vault.root).unwrap().into());
+                    visit(vault, &path, entries, contents, cancelled, progress)?;
                 } else if kind.is_file()
                     && path
                         .extension()
@@ -222,38 +236,53 @@ impl Vault {
                 {
                     let relative = path.strip_prefix(&vault.root).unwrap();
                     if !contents {
-                        notes.push(Arc::new(Note::new(relative.into(), "", None)));
+                        entries
+                            .notes
+                            .push(Arc::new(Note::new(relative.into(), "", None)));
                         continue;
                     }
                     let stamp = Stamp::new(&entry.metadata()?);
                     if let Some(&index) = vault.indexes.paths.get(relative)
                         && vault.notes[index].stamp.as_ref() == Some(&stamp)
                     {
-                        notes.push(vault.notes[index].clone());
+                        entries.notes.push(vault.notes[index].clone());
                     } else {
                         let text = fs::read_to_string(&path)?;
-                        notes.push(Arc::new(Note::new(relative.into(), &text, Some(stamp))));
+                        entries.notes.push(Arc::new(Note::new(
+                            relative.into(),
+                            &text,
+                            Some(stamp),
+                        )));
                     }
-                    progress(notes.len());
+                    progress(entries.notes.len());
+                } else if kind.is_file() {
+                    entries
+                        .files
+                        .push(path.strip_prefix(&vault.root).unwrap().into());
                 }
             }
             Ok(())
         }
-        let mut notes = Vec::new();
-        let mut folders = Vec::new();
+        let mut entries = Entries::default();
         check_cancelled(cancelled)?;
         visit(
             self,
             &self.root,
-            &mut notes,
-            &mut folders,
+            &mut entries,
             contents,
             cancelled,
             progress,
         )?;
+        let Entries {
+            mut notes,
+            mut folders,
+            mut files,
+        } = entries;
         folders.sort();
+        files.sort();
         notes.sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
         let changed = folders != *self.folders
+            || files != *self.files
             || notes.len() != self.notes.len()
             || notes
                 .iter()
@@ -266,6 +295,7 @@ impl Vault {
             next.content_indexed = contents || notes.is_empty();
             next.notes = Arc::new(notes);
             next.folders = Arc::new(folders);
+            next.files = Arc::new(files);
             next.reindex_cancellable(cancelled)?;
             check_cancelled(cancelled)?;
             *self = next;
@@ -287,6 +317,12 @@ impl Vault {
                 .and_modify(|v| *v = None)
                 .or_insert(Some(index));
         }
+        indexes.references = crate::links::Resolver::new(
+            self.notes
+                .iter()
+                .map(|n| n.path.clone())
+                .chain(self.files.iter().cloned()),
+        );
         // Resolve using the new path/title maps before building incoming links.
         self.indexes = Arc::new(indexes);
         let mut incoming: HashMap<PathBuf, Vec<usize>> = HashMap::new();
@@ -539,7 +575,7 @@ impl Vault {
         }
         Ok(())
     }
-    /// Move an entry and preserve the resolved targets of wiki links. Callers
+    /// Move an entry and preserve resolved wiki, Markdown and attachment links. Callers
     /// save their open buffers first. All work may run on a background thread.
     pub fn move_entry(&mut self, from: &Path, to: &Path) -> io::Result<()> {
         let source = self.checked_entry(from)?;
@@ -549,8 +585,15 @@ impl Vault {
         }
         self.check_destination(to, Some(from))?;
         let is_folder = fs::metadata(&source)?.is_dir();
-        if !is_folder && Self::note_path(&to.to_string_lossy())? != to {
-            return Err(invalid("Notes must keep their .md extension"));
+        if !is_folder
+            && from
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+                != to.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
+            return Err(invalid(
+                "Notes must keep their .md extension; attachments cannot become notes",
+            ));
         }
         self.refresh()?;
         // Build the post-move resolver before touching any files. This also
@@ -584,42 +627,36 @@ impl Vault {
                 .map(|p| moved_path(p, from, to))
                 .collect(),
         );
+        after.files = Arc::new(self.files.iter().map(|p| moved_path(p, from, to)).collect());
         after.reindex();
+        let before_paths = &self.indexes.references;
+        let after_paths = &after.indexes.references;
         let mut edits = Vec::new();
         for note in self.notes.iter() {
             let new_path = moved_path(&note.path, from, to);
             let mut edit: Option<(String, String)> = None;
-            for link in note.links.iter().rev() {
-                let Some(target) = self.resolve(&note.path, &link.target) else {
+            for link in note.references.iter().rev() {
+                let Some(target) = before_paths.resolve(&note.path, &link.target, link.wiki) else {
                     continue;
                 };
                 let target = moved_path(&target, from, to);
-                if after.resolve(&new_path, &link.target).as_ref() == Some(&target) {
+                if after_paths
+                    .resolve(&new_path, &link.target, link.wiki)
+                    .as_ref()
+                    == Some(&target)
+                {
                     continue;
                 }
-                let (old_target, heading) = link
-                    .target
-                    .split_once('#')
-                    .map_or((link.target.as_str(), ""), |(a, b)| (a, b));
-                let target_path = if old_target.ends_with(".md") {
-                    target.clone()
-                } else {
-                    target.with_extension("")
-                };
-                let mut replacement = target_path.to_string_lossy().replace('\\', "/");
-                if after.resolve(&new_path, &replacement).as_ref() != Some(&target) {
-                    replacement.insert(0, '/');
-                }
-                if replacement.contains("]]")
-                    || after.resolve(&new_path, &replacement).as_ref() != Some(&target)
+                let mut replacement = crate::links::retarget(&new_path, &target, &link.target, link.wiki)
+                    .ok_or_else(|| invalid("This destination cannot be addressed by wiki links; avoid # and ]] in its name"))?;
+                if link.wiki
+                    && replacement.starts_with('/')
+                    && after_paths
+                        .resolve(&new_path, &replacement[1..], true)
+                        .as_ref()
+                        == Some(&target)
                 {
-                    return Err(invalid(
-                        "This destination cannot be addressed by wiki links; avoid # and ]] in its name",
-                    ));
-                }
-                if link.target.contains('#') {
-                    replacement.push('#');
-                    replacement.push_str(heading);
+                    replacement.remove(0);
                 }
                 if edit.is_none() {
                     let baseline = self.read(&note.path)?;
@@ -630,10 +667,8 @@ impl Vault {
                     }
                     edit = Some((baseline.clone(), baseline));
                 }
-                let (baseline, text) = edit.as_mut().unwrap();
-                let inner = &baseline[link.range.start + 2..link.range.end - 2];
-                let alias = inner.find('|').map(|i| &inner[i..]).unwrap_or("");
-                text.replace_range(link.range.clone(), &format!("[[{replacement}{alias}]]"));
+                let (_, text) = edit.as_mut().unwrap();
+                text.replace_range(link.destination.clone(), &replacement);
             }
             if let Some((baseline, text)) = edit {
                 edits.push((note.path.clone(), baseline, text));
@@ -667,6 +702,7 @@ impl Vault {
         Arc::make_mut(&mut after.notes)
             .sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
         Arc::make_mut(&mut after.folders).sort();
+        Arc::make_mut(&mut after.files).sort();
         after.reindex();
         *self = after;
         Ok(())
@@ -688,14 +724,7 @@ impl Vault {
             }
             // Atomic NOREPLACE prevents a racing writer's destination from
             // being overwritten, including an empty directory on Linux.
-            rustix::fs::renameat_with(
-                rustix::fs::CWD,
-                source,
-                rustix::fs::CWD,
-                destination,
-                rustix::fs::RenameFlags::NOREPLACE,
-            )
-            .map_err(io::Error::from)?;
+            crate::platform::rename_new(source, destination)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -768,6 +797,9 @@ impl Vault {
         if disk != baseline {
             return Err(SaveError::Conflict);
         }
+        if disk != text {
+            crate::history::capture(&self.root, path, &disk)?;
+        }
         let mut temp = tempfile::NamedTempFile::new_in(full.parent().unwrap())?;
         temp.as_file()
             .set_permissions(fs::metadata(&full)?.permissions())?;
@@ -817,6 +849,26 @@ impl Vault {
     pub fn contains_path(&self, path: &Path) -> bool {
         self.indexes.paths.contains_key(path)
     }
+    /// Resolve standard Markdown URLs, including percent escapes and `../`.
+    pub fn resolve_attachment(&self, from: &Path, target: &str) -> Option<PathBuf> {
+        self.indexes
+            .references
+            .resolve(from, target, true)
+            .filter(|p| self.files.contains(p))
+    }
+    pub fn resolve_url(&self, from: &Path, target: &str) -> Option<PathBuf> {
+        self.indexes.references.resolve(from, target, false)
+    }
+    pub fn file_path(&self, path: &Path) -> io::Result<PathBuf> {
+        if !self.files.contains(&path.to_owned()) {
+            return Err(invalid("Attachment is not in this vault"));
+        }
+        let full = self.checked_entry(path)?;
+        if !fs::metadata(&full)?.is_file() {
+            return Err(invalid("Attachment is not a file"));
+        }
+        Ok(full)
+    }
     pub fn backlinks(&self, path: &Path) -> Vec<&Note> {
         self.indexes
             .incoming
@@ -864,6 +916,64 @@ pub fn moved_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_preserve_markdown_references_images_and_wiki_embeds_without_reformatting() {
+        let dir = tempfile::tempdir().unwrap();
+        for folder in ["Folder", "Nested", "Attachments"] {
+            fs::create_dir(dir.path().join(folder)).unwrap();
+        }
+        let attachment = "Attachments/é image.png";
+        fs::write(dir.path().join(attachment), b"original image bytes").unwrap();
+        fs::write(dir.path().join("Folder/Ref.md"), "Reference\n").unwrap();
+        let note = "---\nexample: '[keep](../Attachments/%C3%A9%20image.png)'\n---\n[local](Ref.md#Heading)\n![picture](../Attachments/%C3%A9%20image.png \"caption\")\n[download][asset]\n\n[asset]: <../Attachments/%C3%A9%20image.png> 'title'\n\n![[é image.png|120]]\n`![code](../Attachments/%C3%A9%20image.png)`\n%% [comment](../Attachments/%C3%A9%20image.png) %%\n";
+        fs::write(dir.path().join("Folder/Note.md"), note).unwrap();
+        fs::write(
+            dir.path().join("Home.md"),
+            "[note](Folder/Note.md#Heading) [[Folder/Note|alias]]\n",
+        )
+        .unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+        vault
+            .move_entry(Path::new("Folder"), Path::new("Nested/Renamed"))
+            .unwrap();
+        let moved = fs::read_to_string(dir.path().join("Nested/Renamed/Note.md")).unwrap();
+        assert!(moved.contains("[local](Ref.md#Heading)"));
+        assert!(moved.contains("![picture](../../Attachments/%C3%A9%20image.png \"caption\")"));
+        assert!(moved.contains("[asset]: <../../Attachments/%C3%A9%20image.png> 'title'"));
+        assert!(moved.contains("example: '[keep](../Attachments/%C3%A9%20image.png)'"));
+        assert!(moved.contains("`![code](../Attachments/%C3%A9%20image.png)`"));
+        assert!(moved.contains("%% [comment](../Attachments/%C3%A9%20image.png) %%"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("Home.md")).unwrap(),
+            "[note](Nested/Renamed/Note.md#Heading) [[Nested/Renamed/Note|alias]]\n"
+        );
+        vault
+            .move_entry(
+                Path::new(attachment),
+                Path::new("Attachments/Renamed image.png"),
+            )
+            .unwrap();
+        let moved = fs::read_to_string(dir.path().join("Nested/Renamed/Note.md")).unwrap();
+        assert!(moved.contains("![picture](../../Attachments/Renamed%20image.png \"caption\")"));
+        assert!(moved.contains("![[Attachments/Renamed image.png|120]]"));
+        assert_eq!(
+            fs::read(dir.path().join("Attachments/Renamed image.png")).unwrap(),
+            b"original image bytes"
+        );
+        assert!(
+            vault
+                .files
+                .contains(&PathBuf::from("Attachments/Renamed image.png"))
+        );
+        assert_eq!(
+            vault.resolve_url(
+                Path::new("Nested/Renamed/Note.md"),
+                "../../Attachments/Renamed%20image.png"
+            ),
+            Some("Attachments/Renamed image.png".into())
+        );
+    }
     #[test]
     fn trash_preserves_folders_attachments_links_and_restores_without_overwrite() {
         let dir = tempfile::tempdir().unwrap();

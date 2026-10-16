@@ -1,5 +1,6 @@
 //! Small Markdown editing transactions shared by every editor presentation.
 use crate::buffer::Buffer;
+use std::ops::Range;
 
 /// Literal matches with byte offsets into the original UTF-8 source.
 pub fn find(text: &str, query: &str, case_sensitive: bool) -> Vec<std::ops::Range<usize>> {
@@ -43,6 +44,26 @@ pub struct ListPrefix {
     pub marker: String,
     pub end: usize,
     pub task: Option<bool>,
+    pub task_range: Option<Range<usize>>,
+}
+
+/// Obsidian considers any single non-space task marker checked.
+pub fn task_marker(text: &str) -> Option<(bool, usize)> {
+    let body = text.strip_prefix('[')?;
+    let marker = body.chars().next()?;
+    if matches!(marker, '\n' | '\r' | ']') {
+        return None;
+    }
+    let end = 1 + marker.len_utf8() + 1;
+    if text.as_bytes().get(end - 1) != Some(&b']')
+        || text[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    Some((marker != ' ', end))
 }
 
 pub fn list_prefix(line: &str) -> Option<ListPrefix> {
@@ -62,19 +83,20 @@ pub fn list_prefix(line: &str) -> Option<ListPrefix> {
             }
             (body[..digits + 2].to_owned(), digits + 2)
         };
-    let task = match body.get(end..end + 4) {
-        Some("[ ] ") => Some(false),
-        Some("[x] " | "[X] ") => Some(true),
-        _ => None,
-    };
-    if task.is_some() {
-        end += 4;
-    }
+    let parsed =
+        task_marker(&body[end..]).filter(|(_, bytes)| body[end + bytes..].starts_with([' ', '\t']));
+    let task_range = parsed.map(|(_, bytes)| indent.len() + end..indent.len() + end + bytes);
+    let task = parsed.map(|(done, bytes)| {
+        end += bytes;
+        end += body[end..].len() - body[end..].trim_start_matches([' ', '\t']).len();
+        done
+    });
     Some(ListPrefix {
         indent: indent.into(),
         marker,
         end: indent.len() + end,
         task,
+        task_range,
     })
 }
 
@@ -210,6 +232,33 @@ pub fn toggle_task(buffer: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn custom_task_toggle_and_continue_are_undoable() {
+        let mut b = Buffer::new("* [é] Unicode");
+        b.move_to(b.text().len(), false);
+        newline(&mut b);
+        assert_eq!(b.text(), "* [é] Unicode\n* [ ] ");
+        b.undo();
+        toggle_task(&mut b);
+        assert_eq!(b.text(), "* [ ] Unicode");
+        b.undo();
+        assert_eq!(b.text(), "* [é] Unicode");
+        for source in [
+            "- [?] Question",
+            "+ [/] **Nested**",
+            "1. [é] Unicode",
+            "- [ ] Pending",
+        ] {
+            let line = crate::live::Line::new(source, false, false, false);
+            assert!(
+                line.text
+                    .starts_with(if source.contains("[ ]") { "☐" } else { "☑" })
+            );
+            for (byte, _) in line.text.char_indices() {
+                assert!(source.is_char_boundary(line.source_index(byte)));
+            }
+        }
+    }
     #[test]
     fn literal_find_returns_original_unicode_byte_ranges() {
         let text = "CAFÉ café İ 👩‍💻";

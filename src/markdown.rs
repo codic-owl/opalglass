@@ -1,5 +1,5 @@
-//! A deliberately small, original Markdown parser for the native preview.
-//! No HTML evaluation, scripting, or source from Zed's editor.
+//! Markdown metadata and the shared CommonMark inline projection.
+//! Native Reading uses the whole-document parser in `rendering`.
 use std::ops::Range;
 
 pub const TAG_TARGET_PREFIX: &str = "opalglass-tag:";
@@ -38,6 +38,34 @@ pub struct InlineStyle {
     pub strike: bool,
     pub target: Option<String>,
     pub image: bool,
+    pub highlight: Option<HighlightColor>,
+    pub syntax_color: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightColor {
+    Default,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+impl HighlightColor {
+    pub(crate) fn prefix(text: &str) -> Option<(Self, usize)> {
+        let ch = text.chars().next()?;
+        let color = match ch {
+            '🔴' => Self::Red,
+            '🟠' => Self::Orange,
+            '🟡' => Self::Yellow,
+            '🟢' => Self::Green,
+            '🔵' => Self::Blue,
+            '🟣' => Self::Purple,
+            _ => return None,
+        };
+        Some((color, ch.len_utf8()))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +75,7 @@ pub struct Span {
 }
 
 /// Parse common inline formatting into display text and non-overlapping UTF-8
-/// ranges. Unsupported syntax remains literal. This is not a CommonMark parser.
+/// ranges. Obsidian-specific extensions are tracked in the coverage inventory.
 pub fn inline(source: &str) -> (String, Vec<Span>) {
     let (text, spans, _) = inline_impl(source, false);
     (text, spans)
@@ -60,185 +88,7 @@ pub fn inline_mapped(source: &str) -> (String, Vec<Span>, Vec<usize>) {
 }
 
 fn inline_impl(source: &str, mapped: bool) -> (String, Vec<Span>, Vec<usize>) {
-    fn parse(
-        source: &str,
-        inherited: InlineStyle,
-        depth: usize,
-        out: &mut String,
-        spans: &mut Vec<Span>,
-        mapping: &mut Option<Vec<usize>>,
-        base: usize,
-    ) {
-        fn append(
-            text: &str,
-            style: &InlineStyle,
-            out: &mut String,
-            spans: &mut Vec<Span>,
-            mapping: &mut Option<Vec<usize>>,
-            base: usize,
-        ) {
-            let start = out.len();
-            if let Some(mapping) = mapping.as_mut()
-                && !text.is_empty()
-            {
-                mapping.truncate(start);
-                let offset = text.as_ptr() as usize - base;
-                mapping.extend(offset..=offset + text.len());
-            }
-            out.push_str(text);
-            if start != out.len() && *style != InlineStyle::default() {
-                if let Some(previous) = spans.last_mut()
-                    && previous.range.end == start
-                    && previous.style == *style
-                {
-                    previous.range.end = out.len();
-                    return;
-                }
-                spans.push(Span {
-                    range: start..out.len(),
-                    style: style.clone(),
-                });
-            }
-        }
-        if depth > 16 {
-            append(source, &inherited, out, spans, mapping, base);
-            return;
-        }
-        let mut rest = source;
-        let mut missing = [false; 6];
-        let wiki_end = source.rfind("]]");
-        let link_middle = source.rfind("](");
-        let link_end = source.rfind(')');
-        while !rest.is_empty() {
-            if let Some(escaped) = rest.strip_prefix('\\')
-                && let Some(c) = escaped.chars().next()
-                && c.is_ascii_punctuation()
-            {
-                append(
-                    &escaped[..c.len_utf8()],
-                    &inherited,
-                    out,
-                    spans,
-                    mapping,
-                    base,
-                );
-                rest = &escaped[c.len_utf8()..];
-                continue;
-            }
-            if rest.starts_with("![")
-                && !rest.starts_with("![[")
-                && let Some(middle) = rest.find("](")
-                && let Some(end) = rest[middle + 2..].find(')')
-            {
-                let mut style = inherited.clone();
-                style.target = Some(rest[middle + 2..middle + 2 + end].into());
-                style.image = true;
-                append(&rest[2..middle], &style, out, spans, mapping, base);
-                rest = &rest[middle + end + 3..];
-                continue;
-            }
-            if rest.starts_with("[[")
-                && wiki_end.is_some_and(|end| end >= source.len() - rest.len() + 2)
-                && let Some(end) = rest[2..].find("]]")
-            {
-                let inner = &rest[2..end + 2];
-                let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
-                let mut style = inherited.clone();
-                style.target = Some(target.trim().into());
-                append(label.trim(), &style, out, spans, mapping, base);
-                rest = &rest[end + 4..];
-                continue;
-            }
-            if rest.starts_with('[')
-                && !rest.starts_with("[[")
-                && link_end.is_some_and(|end| end > source.len() - rest.len())
-                && link_middle.is_some_and(|end| end > source.len() - rest.len())
-                && let Some(middle) = rest.find("](")
-                && let Some(end) = rest[middle + 2..].find(')')
-            {
-                let target = &rest[middle + 2..middle + 2 + end];
-                let mut style = inherited.clone();
-                style.target = Some(target.into());
-                append(&rest[1..middle], &style, out, spans, mapping, base);
-                rest = &rest[middle + end + 3..];
-                continue;
-            }
-            let position = source.len() - rest.len();
-            if rest.starts_with('#')
-                && inherited.target.is_none()
-                && !inherited.code
-                && (position == 0
-                    || source[..position]
-                        .ends_with(|c: char| c.is_whitespace() || "([{ ".contains(c)))
-            {
-                let end = rest[1..]
-                    .find(|c: char| !c.is_alphanumeric() && !"_-/".contains(c))
-                    .map_or(rest.len(), |i| i + 1);
-                let tag = &rest[1..end];
-                if valid_tag(tag) {
-                    let mut style = inherited.clone();
-                    style.target = Some(format!("{TAG_TARGET_PREFIX}{tag}"));
-                    append(&rest[..end], &style, out, spans, mapping, base);
-                    rest = &rest[end..];
-                    continue;
-                }
-            }
-            let mut matched = false;
-            for (index, delimiter) in ["`", "**", "__", "~~", "*", "_"].into_iter().enumerate() {
-                if missing[index] {
-                    continue;
-                }
-                if let Some(tail) = rest.strip_prefix(delimiter)
-                    && !tail.contains(delimiter)
-                {
-                    missing[index] = true;
-                    continue;
-                }
-                if let Some(tail) = rest.strip_prefix(delimiter)
-                    && let Some(end) = tail.find(delimiter)
-                    && end > 0
-                {
-                    let mut style = inherited.clone();
-                    match delimiter {
-                        "`" => style.code = true,
-                        "**" | "__" => style.bold = true,
-                        "~~" => style.strike = true,
-                        _ => style.italic = true,
-                    }
-                    if style.code {
-                        append(&tail[..end], &style, out, spans, mapping, base);
-                    } else {
-                        parse(&tail[..end], style, depth + 1, out, spans, mapping, base);
-                    }
-                    rest = &tail[end + delimiter.len()..];
-                    matched = true;
-                    break;
-                }
-            }
-            if !matched {
-                let first = rest.chars().next().unwrap().len_utf8();
-                let n = first
-                    + rest[first..]
-                        .find(['\\', '[', '`', '*', '_', '~', '#', '!'])
-                        .unwrap_or(rest.len() - first);
-                append(&rest[..n], &inherited, out, spans, mapping, base);
-                rest = &rest[n..];
-            }
-        }
-    }
-    let mut text = String::new();
-    let mut spans = Vec::new();
-    let mut mapping = mapped.then(Vec::new);
-    parse(
-        source,
-        InlineStyle::default(),
-        0,
-        &mut text,
-        &mut spans,
-        &mut mapping,
-        source.as_ptr() as usize,
-    );
-    (text, spans, mapping.unwrap_or_default())
+    crate::inline::parse(source, mapped)
 }
 
 pub fn blocks(source: &str) -> Vec<Block> {
@@ -305,13 +155,10 @@ pub fn blocks_with_ranges(source: &str) -> Vec<(Block, Range<usize>)> {
             Some(Block::Rule)
         } else if let Some(text) = trimmed.strip_prefix("> ") {
             Some(Block::Quote(text.into()))
-        } else if let Some(text) = trimmed.strip_prefix("- [ ] ") {
-            Some(Block::Task(false, text.into()))
-        } else if let Some(text) = trimmed
-            .strip_prefix("- [x] ")
-            .or_else(|| trimmed.strip_prefix("- [X] "))
+        } else if let Some(prefix) = crate::editing::list_prefix(trimmed)
+            && let Some(done) = prefix.task
         {
-            Some(Block::Task(true, text.into()))
+            Some(Block::Task(done, trimmed[prefix.end..].into()))
         } else {
             trimmed
                 .strip_prefix("- ")
@@ -341,92 +188,34 @@ pub fn blocks_with_ranges(source: &str) -> Vec<(Block, Range<usize>)> {
 
 /// Find wiki links, ignoring escaped delimiters, inline code and fenced code.
 pub fn wiki_links(source: &str) -> Vec<WikiLink> {
-    let mut links = Vec::new();
-    let mut offset = 0;
-    let mut fence: Option<(char, usize)> = None;
-    for line in source.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        let marker = trimmed.chars().next().unwrap_or(' ');
-        let count = trimmed.chars().take_while(|c| *c == marker).count();
-        if let Some((c, n)) = fence {
-            if marker == c && count >= n && trimmed[count..].trim().is_empty() {
-                fence = None;
-            }
-            offset += line.len();
-            continue;
-        }
-        if (marker == '`' || marker == '~') && count >= 3 {
-            fence = Some((marker, count));
-            offset += line.len();
-            continue;
-        }
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        let mut ticks = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\\' {
-                i = (i + 2).min(bytes.len());
-                continue;
-            }
-            if bytes[i] == b'`' {
-                let run = bytes[i..].iter().take_while(|b| **b == b'`').count();
-                if ticks == 0 {
-                    ticks = run;
-                } else if ticks == run {
-                    ticks = 0;
-                }
-                i += run;
-                continue;
-            }
-            if ticks == 0 && bytes[i..].starts_with(b"[[") {
-                let Some(end) = line[i + 2..].find("]]") else {
-                    break;
-                };
-                let end = i + 2 + end;
-                let inner = &line[i + 2..end];
-                let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
-                if !target.trim().is_empty() {
-                    links.push(WikiLink {
-                        target: target.trim().into(),
-                        label: label.trim().into(),
-                        range: offset + i..offset + end + 2,
-                    });
-                }
-                i = end + 2;
-                continue;
-            }
-            i += 1;
-        }
-        offset += line.len();
-    }
-    links
+    crate::links::analyze(source).wiki_links
 }
 
 pub fn tags(source: &str) -> Vec<String> {
-    let mut tags = std::collections::BTreeSet::new();
-    for block in blocks(source) {
-        let text = match block {
-            Block::Heading(_, s)
-            | Block::Paragraph(s)
-            | Block::Quote(s)
-            | Block::Item(s)
-            | Block::Task(_, s) => s,
-            Block::Code(_) | Block::Rule => continue,
-        };
-        let (_, spans) = inline(&text);
-        for span in spans {
-            if let Some(tag) = span
-                .style
-                .target
-                .as_deref()
-                .and_then(|t| t.strip_prefix(TAG_TARGET_PREFIX))
-            {
-                tags.insert(tag.to_owned());
-            }
+    crate::links::analyze(source).tags
+}
+
+pub(crate) fn text_tags(text: &str, previous: Option<char>) -> Vec<Range<usize>> {
+    let mut ranges = vec![];
+    for (index, _) in text.match_indices('#') {
+        let before = text[..index].chars().next_back().or(previous);
+        let highlighted = text[..index].ends_with("==")
+            || ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣"].iter().any(|color| {
+                text[..index]
+                    .strip_suffix(color)
+                    .is_some_and(|prefix| prefix.ends_with("=="))
+            });
+        if !highlighted && before.is_some_and(|c| !c.is_whitespace() && !"([{ ".contains(c)) {
+            continue;
+        }
+        let end = text[index + 1..]
+            .find(|c: char| !c.is_alphanumeric() && !"_-/".contains(c))
+            .map_or(text.len(), |n| index + 1 + n);
+        if valid_tag(&text[index + 1..end]) {
+            ranges.push(index..end);
         }
     }
-    tags.extend(crate::properties::tags(source));
-    tags.into_iter().collect()
+    ranges
 }
 
 pub fn heading_matches(title: &str, anchor: &str) -> bool {

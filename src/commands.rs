@@ -15,6 +15,8 @@ pub enum Command {
     Properties,
     Mentions,
     Compare,
+    History,
+    UndoReplace,
     Replace,
     Search,
     Source,
@@ -45,6 +47,8 @@ impl Command {
         (Self::Find, "Find in current note", "Ctrl F"),
         (Self::Properties, "Edit note properties", ""),
         (Self::Mentions, "Find unlinked mentions of current note", ""),
+        (Self::History, "Review saved versions of current note", ""),
+        (Self::UndoReplace, "Undo last bulk replacement", ""),
         (Self::Compare, "Compare current note with disk", ""),
         (
             Self::Replace,
@@ -86,6 +90,7 @@ impl Command {
             | Self::NewFolder
             | Self::Search
             | Self::Replace
+            | Self::UndoReplace
             | Self::Bookmarks
             | Self::DailyNote
             | Self::RestoreTrash => vault,

@@ -47,6 +47,7 @@ struct Tab {
     _disk_reload: Option<Task<()>>,
     prepare_cancelled: Arc<AtomicBool>,
     preview_scroll: ListState,
+    preview_projection: opalglass::callouts::Projection,
     connections_cache: Option<ConnectionSnapshot>,
     connections_scroll: UniformListScrollHandle,
     _subscription: Subscription,
@@ -56,8 +57,81 @@ struct Tab {
     _attachment_subscription: Subscription,
 }
 impl Tab {
+    fn saved_preview_offset(&self) -> ListOffset {
+        let offset = self.preview_scroll.logical_scroll_top();
+        ListOffset {
+            item_ix: self.preview_projection.row(offset.item_ix),
+            ..offset
+        }
+    }
+    fn restore_preview_offset(&mut self, offset: ListOffset) {
+        self.reveal_preview_row(offset.item_ix);
+        self.preview_scroll.scroll_to(ListOffset {
+            item_ix: self.preview_projection.list_index(offset.item_ix),
+            ..offset
+        });
+    }
+    fn install_prepared(&mut self, prepared: Arc<Prepared>, preserve_folds: bool) {
+        let offset = self.preview_scroll.logical_scroll_top();
+        let byte = self
+            .prepared
+            .rows
+            .get(self.preview_projection.row(offset.item_ix))
+            .map_or(0, |r| r.source.start);
+        if !preserve_folds {
+            self.preview_projection.overrides.clear();
+        }
+        self.preview_projection
+            .rebuild(prepared.rows.len(), &prepared.callouts);
+        self.preview_projection.with_footnotes(
+            prepared.rows.len(),
+            &prepared.footnotes,
+            &prepared.callouts,
+        );
+        self.preview_scroll.splice(
+            0..self.preview_scroll.item_count(),
+            self.preview_projection.len(prepared.rows.len()),
+        );
+        let row = prepared.row_at_source(byte);
+        self.preview_scroll.scroll_to(ListOffset {
+            item_ix: self.preview_projection.list_index(row),
+            offset_in_item: offset.offset_in_item,
+        });
+        self.prepared = prepared;
+    }
+    fn reveal_preview_row(&mut self, row: usize) {
+        let mut changed = false;
+        for callout in &self.prepared.callouts {
+            if callout.rows.contains(&row)
+                && row > callout.rows.start
+                && self.preview_projection.collapsed(callout)
+            {
+                self.preview_projection
+                    .overrides
+                    .insert(callout.source.start, false);
+                changed = true;
+            }
+        }
+        if changed {
+            self.preview_projection
+                .rebuild(self.prepared.rows.len(), &self.prepared.callouts);
+            self.preview_projection.with_footnotes(
+                self.prepared.rows.len(),
+                &self.prepared.footnotes,
+                &self.prepared.callouts,
+            );
+            self.preview_scroll.splice(
+                0..self.preview_scroll.item_count(),
+                self.preview_projection.len(self.prepared.rows.len()),
+            );
+        }
+        self.preview_scroll.scroll_to(ListOffset {
+            item_ix: self.preview_projection.list_index(row),
+            offset_in_item: px(0.),
+        });
+    }
     fn cancel_opening_analysis(&mut self) {
-        if !self.prepared.complete {
+        if !self.prepared.analysis_complete() {
             self.prepare_cancelled.store(true, Ordering::Relaxed);
             self._prepare = None;
             self.requested_revision = u64::MAX;
@@ -201,6 +275,8 @@ pub struct Workspace {
     preferences: opalglass::state::Preferences,
     settings_open: bool,
     properties_panel: Option<PropertiesPanel>,
+    history_panel: Option<HistoryPanel>,
+    _history: Option<Task<()>>,
     comparison: Option<ExternalComparison>,
     _comparison: Option<Task<()>>,
     mentions: Option<MentionsPanel>,
@@ -670,6 +746,8 @@ impl Workspace {
             preferences: preferences.clone(),
             settings_open: false,
             properties_panel: None,
+            history_panel: None,
+            _history: None,
             comparison: None,
             _comparison: None,
             mentions: None,
@@ -978,6 +1056,8 @@ impl Workspace {
             C::Find => self.open_find(window, cx),
             C::Properties => self.open_properties(window, cx),
             C::Mentions => self.open_mentions(window, cx),
+            C::History => self.open_history(window, cx),
+            C::UndoReplace => self.undo_replacements(window, cx),
             C::Compare => self.open_comparison(window, cx),
             C::Replace => self.open_replace(window, cx),
             C::Search => {
@@ -1508,16 +1588,13 @@ impl Workspace {
                                     .hover(|s| s.bg(rgb(0x303749)))
                                     .child(div().truncate().child(title.clone()))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        let Some(tab) = this.tabs.get(this.active) else {
+                                        let Some(tab) = this.tabs.get_mut(this.active) else {
                                             return;
                                         };
                                         let row = tab.prepared.headings[index].1;
                                         let byte = tab.prepared.rows[row].source.start;
                                         tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
-                                        tab.preview_scroll.scroll_to(ListOffset {
-                                            item_ix: row,
-                                            offset_in_item: px(0.),
-                                        });
+                                        tab.reveal_preview_row(row);
                                         this.preview_pane.update(cx, |_, cx| cx.notify());
                                         this.focus_document(window, cx);
                                     }))
@@ -1622,20 +1699,13 @@ impl Workspace {
         else {
             return;
         };
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
         tab.editor
             .update(cx, |e, cx| e.select_match(range.clone(), cx));
-        let row = tab
-            .prepared
-            .rows
-            .partition_point(|r| r.source.start <= range.start)
-            .saturating_sub(1);
-        tab.preview_scroll.scroll_to(ListOffset {
-            item_ix: row,
-            offset_in_item: px(0.),
-        });
+        let row = tab.prepared.row_at_source(range.start);
+        tab.reveal_preview_row(row);
         self.preview_pane.update(cx, |_, cx| cx.notify());
     }
     fn next_find(&mut self, backwards: bool, cx: &mut Context<Self>) {
@@ -2130,7 +2200,7 @@ impl Workspace {
                         offset_in_item: px(saved.preview.offset),
                     };
                     if tab.prepared.complete {
-                        tab.preview_scroll.scroll_to(offset);
+                        tab.restore_preview_offset(offset);
                     } else {
                         tab.pending_preview = Some(offset);
                     }
@@ -2286,7 +2356,7 @@ impl Workspace {
                 let editor = tab.editor.read(cx);
                 let preview = tab
                     .pending_preview
-                    .unwrap_or_else(|| tab.preview_scroll.logical_scroll_top());
+                    .unwrap_or_else(|| tab.saved_preview_offset());
                 navigation::SessionTab {
                     path: tab.path.clone(),
                     cursor: editor.buffer.cursor(),
@@ -2758,7 +2828,7 @@ impl Workspace {
         let editor = tab.editor.read(cx);
         let preview = tab
             .pending_preview
-            .unwrap_or_else(|| tab.preview_scroll.logical_scroll_top());
+            .unwrap_or_else(|| tab.saved_preview_offset());
         Some(navigation::SessionTab {
             path: tab.path.clone(),
             cursor: editor.buffer.cursor(),
@@ -2804,7 +2874,7 @@ impl Workspace {
             offset_in_item: px(saved.preview.offset),
         };
         if tab.prepared.complete {
-            tab.preview_scroll.scroll_to(pos);
+            tab.restore_preview_offset(pos);
         } else {
             tab.pending_preview = Some(pos);
         }
@@ -2856,6 +2926,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(vault) = &self.vault
+            && vault.files.contains(&path)
+        {
+            if !opalglass::attachments::supported(&path) {
+                self.message("This attachment type cannot be opened yet", true, cx);
+                return;
+            }
+            match vault.file_path(&path) {
+                Ok(full) => cx.open_with_system(&full),
+                Err(error) => self.message(format!("Could not open attachment: {error}"), true, cx),
+            }
+            return;
+        }
         if !self.history_request {
             self.history_restore = None;
         }
@@ -3054,14 +3137,26 @@ impl Workspace {
                 this.import_attachments(editor.clone(), inputs, window, cx);
             },
         );
-        let complete = prepared.complete;
+        let complete = prepared.analysis_complete();
+        let mut preview_projection = opalglass::callouts::Projection::default();
+        preview_projection.rebuild(prepared.rows.len(), &prepared.callouts);
+        preview_projection.with_footnotes(
+            prepared.rows.len(),
+            &prepared.footnotes,
+            &prepared.callouts,
+        );
         self.tabs.push(Tab {
             path,
             baseline: text,
             external_changed: false,
             baseline_normalized: normalized,
             dirty_cache: Cell::new((revision, dirty)),
-            preview_scroll: ListState::new(prepared.rows.len(), ListAlignment::Top, px(100.)),
+            preview_scroll: ListState::new(
+                preview_projection.len(prepared.rows.len()),
+                ListAlignment::Top,
+                px(100.),
+            ),
+            preview_projection,
             connections_cache: None,
             connections_scroll: UniformListScrollHandle::new(),
             prepared,
@@ -3103,10 +3198,7 @@ impl Workspace {
                 .iter()
                 .find(|(title, _)| markdown::heading_matches(title, &heading))
             {
-                tab.preview_scroll.scroll_to(ListOffset {
-                    item_ix: *index,
-                    offset_in_item: px(0.),
-                });
+                tab.reveal_preview_row(*index);
                 self.preview_pane.update(cx, |_, cx| cx.notify());
             }
             if let Some(offset) =
@@ -3166,8 +3258,10 @@ impl Workspace {
             }
         }
         tab.link_style_revision = revision;
+        let syntax = tab.prepared.source_syntax.clone();
         tab.editor.update(cx, |editor, cx| {
             editor.set_code_blocks(code_blocks);
+            editor.source_syntax = syntax;
             editor.set_source_links(links, missing);
             cx.notify();
         });
@@ -3182,11 +3276,14 @@ impl Workspace {
             });
         let missing = !attachment
             && !target.starts_with(markdown::TAG_TARGET_PREFIX)
+            && !target.starts_with(opalglass::footnotes::TARGET_PREFIX)
+            && !target.starts_with(opalglass::footnotes::BACK_PREFIX)
             && !external_link(target)
             && self.tabs.get(self.active).is_some_and(|tab| {
-                self.vault
-                    .as_ref()
-                    .is_some_and(|vault| vault.resolve(&tab.path, target).is_none())
+                self.vault.as_ref().is_some_and(|vault| {
+                    vault.resolve(&tab.path, target).is_none()
+                        && vault.resolve_url(&tab.path, target).is_none()
+                })
             });
         HighlightStyle {
             color: Some(rgb(if missing { MISSING_LINK } else { ACCENT }).into()),
@@ -3676,14 +3773,17 @@ impl Workspace {
         if revision != tab.prepared_revision || tab.prepared.rows.is_empty() {
             return;
         }
-        let index = tab
-            .prepared
-            .rows
-            .partition_point(|row| row.source.start as f64 <= byte)
-            .saturating_sub(1);
+        let index = tab.prepared.row_at_source(byte as usize);
         let range = &tab.prepared.rows[index].source;
         let fraction =
             ((byte - range.start as f64) / range.len().max(1) as f64).clamp(0., 1.) as f32;
+        let visible_index = tab.preview_projection.list_index(index);
+        let fraction = if tab.preview_projection.row(visible_index) == index {
+            fraction
+        } else {
+            0.
+        };
+        let index = visible_index;
         let height = tab
             .preview_scroll
             .bounds_for_item(index)
@@ -3778,7 +3878,10 @@ impl Workspace {
         if tab.initial_frame_pending || tab.requested_revision == revision {
             return;
         }
-        let initial = !tab.prepared.complete;
+        let initial = !tab.prepared.analysis_complete();
+        let decorate = tab.prepared.complete
+            && tab.prepared_revision == revision
+            && !tab.prepared.syntax_ready;
         tab.requested_revision = revision;
         tab.prepare_cancelled.store(true, Ordering::Relaxed);
         tab.prepare_cancelled = Arc::new(AtomicBool::new(false));
@@ -3794,7 +3897,14 @@ impl Workspace {
             }
             let prepared = cx
                 .background_executor()
-                .spawn(async move { Prepared::new_cancellable(&text, &cancelled).map(Arc::new) })
+                .spawn(async move {
+                    if decorate {
+                        Prepared::new_cancellable(&text, &cancelled)
+                    } else {
+                        Prepared::undecorated_cancellable(&text, &cancelled)
+                    }
+                    .map(Arc::new)
+                })
                 .await;
             let Some(prepared) = prepared else {
                 return;
@@ -3813,10 +3923,10 @@ impl Workspace {
                     return;
                 }
                 let offset = tab.preview_scroll.logical_scroll_top();
-                tab.preview_scroll
-                    .splice(0..tab.preview_scroll.item_count(), prepared.rows.len());
-                tab.preview_scroll
-                    .scroll_to(tab.pending_preview.take().unwrap_or(offset));
+                tab.install_prepared(prepared.clone(), tab.prepared_revision == revision);
+                if let Some(pending) = tab.pending_preview.take() {
+                    tab.restore_preview_offset(pending);
+                }
                 if let Some(heading) = tab.pending_heading.take()
                     && offset.item_ix == 0
                     && offset.offset_in_item == px(0.)
@@ -3825,13 +3935,12 @@ impl Workspace {
                         .iter()
                         .find(|(title, _)| markdown::heading_matches(title, &heading))
                 {
-                    tab.preview_scroll.scroll_to(ListOffset {
-                        item_ix: *index,
-                        offset_in_item: px(0.),
-                    });
+                    tab.reveal_preview_row(*index);
                 }
-                tab.prepared = prepared;
                 tab.prepared_revision = revision;
+                if !prepared.analysis_complete() {
+                    tab.requested_revision = u64::MAX;
+                }
                 tab.link_style_revision = (u64::MAX, u64::MAX);
                 cx.notify();
             });
@@ -3877,13 +3986,11 @@ impl Workspace {
                         tab.prepared_revision = revision;
                         tab.requested_revision = revision;
                         tab.dirty_cache.set((revision, false));
-                        let offset = tab.preview_scroll.logical_scroll_top();
-                        tab.preview_scroll.splice(0..tab.preview_scroll.item_count(), prepared.rows.len());
-                        tab.preview_scroll.scroll_to(offset);
+                        tab.install_prepared(prepared.clone(), false);
                         tab.editor.update(cx, |editor, cx| {
                             editor.set_buffer(buffer, cx);
                         });
-                        tab.prepared = prepared;
+
                         this.revision += 1;
                         if let (Some(dir), Some(vault)) = (&this.state_directory, &this.vault) {
                             let _ = opalglass::state::Recovery::remove(dir, &vault.root, &tab.path);
@@ -4222,7 +4329,7 @@ impl Workspace {
             if self
                 .vault
                 .as_ref()
-                .is_some_and(|v| v.folders.contains(path))
+                .is_some_and(|v| v.folders.contains(path) || v.files.contains(path))
             {
                 path.file_name()
             } else {
@@ -4294,6 +4401,7 @@ impl Workspace {
             && self.vault.as_ref().is_some_and(|v| {
                 (folder.as_os_str().is_empty() || v.folders.iter().any(|p| p == folder))
                     && (v.folders.iter().any(|p| p == from)
+                        || v.files.iter().any(|p| p == from)
                         || v.notes.iter().any(|n| n.path == from))
                     && from.parent() != Some(folder)
                     && !folder.starts_with(from)
@@ -4731,16 +4839,10 @@ impl Workspace {
                                 tab.dirty_cache.set((revision, false));
                                 tab.prepared_revision = revision;
                                 tab.requested_revision = revision;
-                                let offset = tab.preview_scroll.logical_scroll_top();
-                                tab.preview_scroll.splice(
-                                    0..tab.preview_scroll.item_count(),
-                                    prepared.rows.len(),
-                                );
-                                tab.preview_scroll.scroll_to(offset);
+                                tab.install_prepared(prepared.clone(), false);
                                 tab.editor.update(cx, |editor, cx| {
                                     editor.set_buffer(buffer, cx);
                                 });
-                                tab.prepared = prepared;
                             }
                         }
                         for location in this
@@ -4963,7 +5065,8 @@ impl Workspace {
                     .vault
                     .as_ref()
                     .is_some_and(|v| v.folders.contains(&from));
-                let path = if is_folder {
+                let is_attachment = self.vault.as_ref().is_some_and(|v| v.files.contains(&from));
+                let path = if is_folder || is_attachment {
                     Vault::folder_path(&input)
                 } else {
                     Vault::note_path(&input)
@@ -5003,6 +5106,32 @@ impl Workspace {
         cx.notify();
     }
     fn follow(&mut self, target: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(number) = target
+            .strip_prefix(opalglass::footnotes::TARGET_PREFIX)
+            .and_then(|n| n.parse().ok())
+        {
+            if let Some(tab) = self.tabs.get_mut(self.active)
+                && let Some(row) = tab.prepared.footnotes.target_row(number)
+            {
+                let byte = tab.prepared.rows[row].source.start;
+                tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
+                tab.reveal_preview_row(row);
+                self.preview_pane.update(cx, |_, cx| cx.notify());
+            }
+            return;
+        }
+        if let Some(byte) = target
+            .strip_prefix(opalglass::footnotes::BACK_PREFIX)
+            .and_then(|n| n.parse().ok())
+        {
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                let row = tab.prepared.row_at_source(byte);
+                tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
+                tab.reveal_preview_row(row);
+                self.preview_pane.update(cx, |_, cx| cx.notify());
+            }
+            return;
+        }
         if let Some(tag) = target.strip_prefix(markdown::TAG_TARGET_PREFIX) {
             self.filter_tag(tag, window, cx);
             return;
@@ -5012,7 +5141,10 @@ impl Workspace {
                 cx.open_with_system(&path);
                 return;
             }
-            if let Some(path) = vault.resolve(&tab.path, &target) {
+            if let Some(path) = vault
+                .resolve(&tab.path, &target)
+                .or_else(|| vault.resolve_url(&tab.path, &target))
+            {
                 self.open_note_at(
                     path,
                     target.split_once('#').map(|(_, h)| h.to_owned()),
@@ -5062,6 +5194,24 @@ impl Workspace {
                 self._mentions = None;
                 self.focus_document(window, cx);
                 cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if let Some(panel) = &self.history_panel {
+            match key {
+                "escape" => {
+                    self.history_panel = None;
+                    self._history = None;
+                    self.focus_document(window, cx);
+                    cx.notify();
+                }
+                "up" if panel.active > 0 => self.select_history(panel.active - 1, cx),
+                "down" if panel.active + 1 < panel.versions.len() => {
+                    self.select_history(panel.active + 1, cx)
+                }
+                "enter" => self.restore_history(window, cx),
+                _ => (),
             }
             cx.stop_propagation();
             return;
@@ -5357,6 +5507,7 @@ impl Workspace {
     fn preview(&self, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[self.active];
         let prepared = tab.prepared.clone();
+        let projection = tab.preview_projection.clone();
         if prepared.complete && prepared.rows.is_empty() {
             return div()
                 .flex_1()
@@ -5382,11 +5533,16 @@ impl Workspace {
                 )
                 .into_any_element();
         }
-        list(
+        let rows = list(
             tab.preview_scroll.clone(),
-            cx.processor(move |this, index, _, cx| {
+            cx.processor(move |this, list_index, _, cx| {
+                let index = projection.row(list_index);
                 div()
                     .w_full()
+                    // GPUI List measures rows at its full width and only uses
+                    // vertical padding. Put horizontal gutters on each row so
+                    // they survive narrow panes and keep the margins scrollable.
+                    .px_6()
                     .flex()
                     .justify_center()
                     .child(
@@ -5402,41 +5558,284 @@ impl Workspace {
         )
         .flex_1()
         .min_w_0()
+        .min_h_0()
         .h_full()
-        .px_6()
-        .py_8()
-        .bg(rgb(0x181c25))
-        .text_size(px(16. * self.preferences.font_size / 14.))
-        .line_height(relative(1.7))
-        .into_any_element()
+        .py_8();
+        // List paints its rows, not a Div background. The surrounding surface
+        // supplies typography and color consistently in Reading and Split.
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x181c25))
+            .text_size(px(16. * self.preferences.font_size / 14.))
+            .line_height(relative(1.7))
+            .child(rows)
+            .into_any_element()
     }
     fn preview_row(&self, index: usize, row: &PreviewRow, cx: &mut Context<Self>) -> AnyElement {
-        if row.spans.len() == 1
-            && row.spans[0].style.image
-            && let Some(target) = row.spans[0].style.target.as_deref()
-            && let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active))
-            && let Ok(path) = opalglass::attachments::resolve(&vault.root, &tab.path, target)
-        {
-            return div()
-                .id(("attachment-image", index))
-                .my_3()
+        let mut content = self.preview_content(index, row, cx);
+        let ancestors: Vec<_> = self.tabs[self.active]
+            .prepared
+            .callouts
+            .iter()
+            .filter(|c| {
+                c.rows.contains(&index)
+                    && self.tabs[self.active]
+                        .prepared
+                        .footnotes
+                        .at_row(index)
+                        .is_none_or(|d| d.sections.iter().any(|r| r.contains(&c.rows.start)))
+            })
+            .collect();
+        for _ in 0..row.quotes.saturating_sub(ancestors.len()).min(8) {
+            content = div()
+                .border_l_2()
+                .border_color(rgb(ACCENT))
+                .pl_4()
+                .bg(rgb(0x202532))
+                .child(content)
+                .into_any_element();
+        }
+        for callout in ancestors.iter().rev().take(8) {
+            let projection = &self.tabs[self.active].preview_projection;
+            let last = projection.row(projection.list_index(callout.rows.end.saturating_sub(1)));
+            content = div()
                 .flex()
                 .flex_col()
-                .gap_2()
-                .debug_selector(move || format!("attachment-image-{index}"))
-                .child(
-                    img(path.clone())
-                        .w_full()
-                        .h(px(320.))
-                        .object_fit(ObjectFit::Contain),
-                )
-                .child(caption(row.text.to_string()))
-                .cursor_pointer()
-                .on_click(move |_, _, cx| cx.open_with_system(&path))
+                .border_l_2()
+                .border_color(rgb(callout.color()))
+                .px_4()
+                .bg(rgba((callout.color() << 8) | 20))
+                .when(index == callout.rows.start, |el| el.mt_4().rounded_t_md())
+                .when(index == last, |el| el.pb_3().rounded_b_md())
+                .child(content)
                 .into_any_element();
+        }
+        let content = div()
+            .pl(px(row.indent.min(8) as f32 * 24.))
+            .child(content)
+            .into_any_element();
+        if let Some(definition) = self.tabs[self.active].prepared.footnotes.at_row(index) {
+            let first = index == definition.rows.start;
+            let mut block = div()
+                .flex()
+                .flex_col()
+                .text_size(px(14. * self.preferences.font_size / 14.))
+                .when(first && definition.number == 1, |el| {
+                    el.mt_6().border_t_1().border_color(rgb(LINE)).pt_3()
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .child(div().w(px(24.)).flex_shrink_0().pt_4().child(if first {
+                            format!("{}.", definition.number)
+                        } else {
+                            String::new()
+                        }))
+                        .child(div().flex_1().min_w_0().child(content)),
+                );
+            let projection = &self.tabs[self.active].preview_projection;
+            if definition.sections.last().is_some_and(|r| {
+                projection.row(projection.list_index(r.end.saturating_sub(1))) == index
+            }) {
+                block = block.child(
+                    div().pl_8().flex().gap_2().children(
+                        definition
+                            .references
+                            .iter()
+                            .enumerate()
+                            .map(|(occurrence, at)| {
+                                let target = format!("{}{at}", opalglass::footnotes::BACK_PREFIX);
+                                button(
+                                    (
+                                        SharedString::from(format!("footnote-return-{index}")),
+                                        occurrence,
+                                    ),
+                                    if occurrence == 0 {
+                                        "↩︎".into()
+                                    } else {
+                                        format!("↩︎{}", occurrence + 1)
+                                    },
+                                )
+                                .debug_selector(move || {
+                                    format!("footnote-return-{index}-{occurrence}")
+                                })
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| {
+                                        PathTooltip(format!(
+                                            "Return to reference {}",
+                                            occurrence + 1
+                                        ))
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.follow(target.clone(), window, cx)
+                                    },
+                                ))
+                            }),
+                    ),
+                );
+            }
+            return block.into_any_element();
+        }
+        content
+    }
+
+    fn preview_content(
+        &self,
+        index: usize,
+        row: &PreviewRow,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if row.spans.iter().any(|span| span.style.image)
+            && let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active))
+        {
+            let mut content = div().my_3().flex().flex_col().gap_2();
+            let mut start = 0;
+            for (part, span) in row
+                .spans
+                .iter()
+                .enumerate()
+                .filter(|(_, span)| span.style.image)
+            {
+                let Some(target) = span.style.target.as_deref() else {
+                    continue;
+                };
+                let path = opalglass::attachments::resolve(&vault.root, &tab.path, target)
+                    .ok()
+                    .or_else(|| {
+                        vault
+                            .resolve_attachment(&tab.path, target)
+                            .and_then(|p| vault.file_path(&p).ok())
+                    })
+                    .filter(|p| opalglass::attachments::is_image(p));
+                let Some(path) = path else {
+                    continue;
+                };
+                if start < span.range.start {
+                    content = content.child(self.preview_fragment(
+                        row,
+                        start..span.range.start,
+                        index,
+                        part * 2,
+                        cx,
+                    ));
+                }
+                content = content.child(
+                    div()
+                        .id((SharedString::from(format!("attachment-{index}")), part))
+                        .debug_selector(move || format!("attachment-image-{index}"))
+                        .child(
+                            img(path.clone())
+                                .w_full()
+                                .h(px(320.))
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| cx.open_with_system(&path)),
+                );
+                start = span.range.end;
+            }
+            if start > 0 {
+                if start < row.text.len() {
+                    content = content.child(self.preview_fragment(
+                        row,
+                        start..row.text.len(),
+                        index,
+                        usize::MAX,
+                        cx,
+                    ));
+                }
+                return content.into_any_element();
+            }
         }
 
         let mut style = match row.kind {
+            Kind::CalloutTitle => {
+                let tab = &self.tabs[self.active];
+                let Some(callout) = tab.prepared.callouts.iter().find(|c| c.rows.start == index)
+                else {
+                    return self.preview_text(
+                        row.text.clone(),
+                        &row.spans,
+                        ("callout-title", index).into(),
+                        cx,
+                    );
+                };
+                let mut header = div()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_color(rgb(callout.color()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(callout.symbol())
+                    .child(div().flex_1().min_w_0().child(self.preview_text(
+                        row.text.clone(),
+                        &row.spans,
+                        ("callout-title", index).into(),
+                        cx,
+                    )));
+                if callout.collapsed.is_some() {
+                    let collapsed = tab.preview_projection.collapsed(callout);
+                    let path = tab.path.clone();
+                    let revision = tab.prepared_revision;
+                    let id = callout.source.start;
+                    header = header.child(
+                        button(("fold-callout", index), if collapsed { "›" } else { "⌄" })
+                            .debug_selector(move || format!("fold-callout-{index}"))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| {
+                                    PathTooltip(
+                                        if collapsed {
+                                            "Expand callout"
+                                        } else {
+                                            "Collapse callout"
+                                        }
+                                        .into(),
+                                    )
+                                })
+                                .into()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let Some(tab) = this.tabs.get_mut(this.active) else {
+                                    return;
+                                };
+                                if tab.path != path || tab.prepared_revision != revision {
+                                    return;
+                                }
+                                let offset = tab.preview_scroll.logical_scroll_top();
+                                let row = tab.preview_projection.row(offset.item_ix);
+                                tab.preview_projection.overrides.insert(id, !collapsed);
+                                tab.preview_projection
+                                    .rebuild(tab.prepared.rows.len(), &tab.prepared.callouts);
+                                tab.preview_projection.with_footnotes(
+                                    tab.prepared.rows.len(),
+                                    &tab.prepared.footnotes,
+                                    &tab.prepared.callouts,
+                                );
+                                tab.preview_scroll.splice(
+                                    0..tab.preview_scroll.item_count(),
+                                    tab.preview_projection.len(tab.prepared.rows.len()),
+                                );
+                                tab.preview_scroll.scroll_to(ListOffset {
+                                    item_ix: tab.preview_projection.list_index(row),
+                                    offset_in_item: offset.offset_in_item,
+                                });
+                                this.preview_pane.update(cx, |_, cx| cx.notify());
+                                cx.notify();
+                            })),
+                    );
+                }
+                return header.into_any_element();
+            }
             Kind::Heading(level) => div()
                 .line_height(relative(1.3))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -5449,13 +5848,7 @@ impl Workspace {
                     / 14.))
                 .text_color(rgb(0xf0edf9)),
             Kind::Paragraph => div(),
-            Kind::Quote => div()
-                .border_l_2()
-                .border_color(rgb(ACCENT))
-                .px_4()
-                .py_2()
-                .bg(rgb(0x202532))
-                .text_color(rgb(0xb7c1d4)),
+            Kind::Quote => div().py_2().text_color(rgb(0xb7c1d4)),
             Kind::Item => div().pl_2(),
             Kind::Task(done) => div()
                 .pl_2()
@@ -5474,7 +5867,9 @@ impl Workspace {
                                 .py_1()
                                 .border_b_1()
                                 .border_color(rgb(LINE))
-                                .child(caption("CODE"))
+                                .child(caption(
+                                    row.language.as_deref().unwrap_or("CODE").to_string(),
+                                ))
                                 .child(
                                     button(("copy-code", index), "Copy code")
                                         .debug_selector(move || format!("copy-code-{index}"))
@@ -5504,33 +5899,64 @@ impl Workspace {
                             .text_size(px(self.preferences.font_size))
                             .line_height(relative(1.6))
                             .text_color(rgb(0xc2d8ce))
-                            .child(
-                                StyledText::new(SharedString::from(row.text.clone()))
-                                    .with_highlights(if self.find.open {
-                                        opalglass::editing::find(
-                                            &row.text,
-                                            self.find.input.read(cx).buffer.text(),
-                                            self.find.case_sensitive,
-                                        )
-                                        .into_iter()
-                                        .map(|r| {
-                                            (
-                                                r,
-                                                HighlightStyle {
-                                                    background_color: Some(rgb(0x655224).into()),
-                                                    ..Default::default()
-                                                },
-                                            )
-                                        })
-                                        .collect::<Vec<_>>()
-                                    } else {
-                                        Vec::new()
-                                    }),
-                            ),
+                            .child(self.preview_text(
+                                row.text.clone(),
+                                &row.spans,
+                                ("code-text", index).into(),
+                                cx,
+                            )),
                     )
                     .into_any_element();
             }
             Kind::Rule => return div().h(px(1.)).my_3().bg(rgb(LINE)).into_any_element(),
+            Kind::Table => {
+                let Some(table) = &row.table else {
+                    return div().into_any_element();
+                };
+                let mut cells = div()
+                    .flex()
+                    .w_full()
+                    .min_w(px(table.cells.len() as f32 * 100.))
+                    .border_l_1()
+                    .border_t_1()
+                    .border_color(rgb(LINE));
+                for (column, cell) in table.cells.iter().enumerate() {
+                    let text = self.preview_text(
+                        cell.text.clone(),
+                        &cell.spans,
+                        (SharedString::from(format!("table-{index}")), column).into(),
+                        cx,
+                    );
+                    cells = cells.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .px_3()
+                            .py_2()
+                            .border_r_1()
+                            .border_b_1()
+                            .border_color(rgb(LINE))
+                            .when(table.header, |el| {
+                                el.font_weight(FontWeight::SEMIBOLD).bg(rgb(0x242936))
+                            })
+                            .when(
+                                cell.alignment == opalglass::rendering::Alignment::Center,
+                                |el| el.text_center(),
+                            )
+                            .when(
+                                cell.alignment == opalglass::rendering::Alignment::Right,
+                                |el| el.text_right(),
+                            )
+                            .child(text),
+                    );
+                }
+                return div()
+                    .id(("reading-table-row", index))
+                    .overflow_x_scroll()
+                    .when(table.header, |el| el.mt_4())
+                    .child(cells)
+                    .into_any_element();
+            }
         };
         if !row.continuation {
             style = style.mt(px(match row.kind {
@@ -5540,7 +5966,70 @@ impl Workspace {
                 _ => 16.,
             }));
         }
-        let spans = &row.spans;
+        let text = self.preview_text(row.text.clone(), &row.spans, ("inline", index).into(), cx);
+        if let Kind::Task(done) = row.kind
+            && !row.continuation
+            && let Some(range) = row.task.clone()
+            && let Some(tab) = self.tabs.get(self.active)
+        {
+            let path = tab.path.clone();
+            let revision = tab.prepared_revision;
+            return style.flex().items_start().gap_2().child(
+                button(("reading-task", index), if done { "☑" } else { "☐" })
+                    .debug_selector(move || format!("reading-task-{index}"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let Some(tab) = this.tabs.get(this.active) else { return; };
+                        if tab.path != path || tab.editor.read(cx).buffer.revision() != revision {
+                            this.message("The note changed. Try the checkbox again when the preview updates.", false, cx);
+                            return;
+                        }
+                        tab.editor.update(cx, |editor, cx| {
+                            let marker = editor.buffer.text().get(range.clone());
+                            if marker.is_some_and(|m| opalglass::editing::task_marker(m).is_some()) {
+                                editor.buffer.replace(range.clone(), if done { "[ ]" } else { "[x]" });
+                                cx.notify();
+                            }
+                        });
+                        cx.notify();
+                    }))
+            ).child(div().flex_1().min_w_0().child(text)).into_any_element();
+        }
+        style.child(text).into_any_element()
+    }
+
+    fn preview_fragment(
+        &self,
+        row: &PreviewRow,
+        range: std::ops::Range<usize>,
+        index: usize,
+        part: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let spans: Vec<_> = row
+            .spans
+            .iter()
+            .filter(|s| s.range.start < range.end && s.range.end > range.start)
+            .map(|s| markdown::Span {
+                range: s.range.start.max(range.start) - range.start
+                    ..s.range.end.min(range.end) - range.start,
+                style: s.style.clone(),
+            })
+            .collect();
+        self.preview_text(
+            row.text[range].into(),
+            &spans,
+            (SharedString::from(format!("fragment-{index}")), part).into(),
+            cx,
+        )
+    }
+
+    fn preview_text(
+        &self,
+        text: Arc<str>,
+        spans: &[markdown::Span],
+        id: ElementId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let highlights = spans
             .iter()
             .map(|span| {
@@ -5557,12 +6046,15 @@ impl Workspace {
                         } else if s.code {
                             Some(rgb(0xa9d5c3).into())
                         } else {
-                            None
+                            s.syntax_color.map(|color| rgb(color).into())
                         },
                         underline: link.and_then(|style| style.underline),
                         font_weight: s.bold.then_some(FontWeight::BOLD),
                         font_style: s.italic.then_some(FontStyle::Italic),
-                        background_color: s.code.then(|| rgb(0x252e37).into()),
+                        background_color: s.code.then(|| rgb(0x252e37).into()).or_else(|| {
+                            s.highlight
+                                .map(|color| rgb(crate::theme::highlight_color(color)).into())
+                        }),
                         strikethrough: s.strike.then_some(StrikethroughStyle {
                             thickness: px(1.),
                             color: None,
@@ -5574,11 +6066,11 @@ impl Workspace {
             .collect::<Vec<_>>();
         let highlights = if self.find.open {
             let matches = opalglass::editing::find(
-                &row.text,
+                &text,
                 self.find.input.read(cx).buffer.text(),
                 self.find.case_sensitive,
             );
-            let mut cuts = vec![0, row.text.len()];
+            let mut cuts = vec![0, text.len()];
             for (r, _) in &highlights {
                 cuts.extend([r.start, r.end]);
             }
@@ -5613,11 +6105,9 @@ impl Workspace {
             .filter_map(|s| s.style.target.clone())
             .collect::<Vec<_>>();
         let entity = cx.entity().downgrade();
-        let styled =
-            StyledText::new(SharedString::from(row.text.clone())).with_highlights(highlights);
-        let interactive = InteractiveText::new(("inline", index), styled).on_click(
-            ranges,
-            move |index, window, cx| {
+        let styled = StyledText::new(SharedString::from(text.clone())).with_highlights(highlights);
+        let interactive =
+            InteractiveText::new(id, styled).on_click(ranges, move |index, window, cx| {
                 if let Some(target) = targets.get(index) {
                     if external_link(target) {
                         cx.open_url(target);
@@ -5626,9 +6116,8 @@ impl Workspace {
                             entity.update(cx, |this, cx| this.follow(target.clone(), window, cx));
                     }
                 }
-            },
-        );
-        style.child(interactive).into_any_element()
+            });
+        interactive.into_any_element()
     }
 }
 
@@ -6408,6 +6897,9 @@ impl Render for Workspace {
         if self.mentions.is_some() {
             root = root.child(self.render_mentions(cx));
         }
+        if self.history_panel.is_some() {
+            root = root.child(self.render_history(cx));
+        }
         if self.comparison.is_some() {
             root = root.child(self.render_comparison(cx));
         }
@@ -7023,3 +7515,5 @@ include!("workspace_attachments.rs");
 include!("workspace_mentions.rs");
 
 include!("workspace_replace.rs");
+
+include!("workspace_history.rs");

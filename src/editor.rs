@@ -89,6 +89,7 @@ pub struct Editor {
     cached_rows: Vec<CachedRow>,
     syntax_version: u64,
     pub source_links: Vec<Range<usize>>,
+    pub source_syntax: Arc<Vec<opalglass::syntax::Span>>,
     pub missing_links: Vec<Range<usize>>,
     find_matches: Arc<Vec<Range<usize>>>,
 }
@@ -148,6 +149,7 @@ impl Editor {
             cached_rows: Vec::new(),
             syntax_version: u64::MAX,
             source_links: Vec::new(),
+            source_syntax: Arc::new(Vec::new()),
             missing_links: Vec::new(),
             find_matches: Arc::new(Vec::new()),
         }
@@ -166,6 +168,7 @@ impl Editor {
         self.live_lines.clear();
         self.code_blocks.clear();
         self.source_links.clear();
+        self.source_syntax = Arc::new(Vec::new());
         self.missing_links.clear();
         self.source_list.reset(0);
         self.pending_scroll = None;
@@ -642,6 +645,7 @@ impl Editor {
         if self.source_version != self.buffer.revision() {
             if self.syntax_version != self.buffer.revision() {
                 self.source_links.clear();
+                self.source_syntax = Arc::new(Vec::new());
                 self.missing_links.clear();
             }
             let offset = self.source_list.logical_scroll_top();
@@ -861,6 +865,16 @@ impl Editor {
             for span in &projection.spans {
                 cuts.extend([span.range.start, span.range.end]);
             }
+            let first_syntax = self
+                .source_syntax
+                .partition_point(|s| s.range.end <= range.start);
+            let syntax: Vec<_> = self.source_syntax[first_syntax..]
+                .iter()
+                .take_while(|s| s.range.start < range.end)
+                .collect();
+            for span in &syntax {
+                cuts.extend([to_display(span.range.start), to_display(span.range.end)]);
+            }
             if let Some(r) = &display_marked {
                 cuts.extend([r.start, r.end]);
             }
@@ -910,15 +924,22 @@ impl Editor {
                     let is_link = links.iter().any(|r| r.contains(&source))
                         || style.is_some_and(|s| s.target.is_some());
                     let inline_code = style.is_some_and(|s| s.code);
+                    let token = syntax
+                        .iter()
+                        .find(|s| s.range.contains(&source))
+                        .map(|s| s.style);
                     let mut text_font = font(if self.live_preview && !code && !inline_code {
                         UI_FONT
                     } else {
                         MONO_FONT
                     });
-                    if heading.is_some() || style.is_some_and(|s| s.bold) {
+                    if heading.is_some()
+                        || style.is_some_and(|s| s.bold)
+                        || token.is_some_and(|s| s.bold)
+                    {
                         text_font.weight = FontWeight::BOLD;
                     }
-                    if style.is_some_and(|s| s.italic) {
+                    if style.is_some_and(|s| s.italic) || token.is_some_and(|s| s.italic) {
                         text_font.style = FontStyle::Italic;
                     }
                     TextRun {
@@ -930,6 +951,8 @@ impl Editor {
                             0xb8a5fa
                         } else if heading.is_some() {
                             0xf0edf9
+                        } else if let Some(token) = token {
+                            token.color
                         } else if code || inline_code {
                             0xc2d8ce
                         } else if projection.kind == live::Kind::Quote
@@ -947,7 +970,11 @@ impl Editor {
                         } else if matches.iter().any(|r| r.contains(&source)) {
                             Some(rgb(0x655224).into())
                         } else {
-                            inline_code.then(|| rgb(0x252e37).into())
+                            inline_code.then(|| rgb(0x252e37).into()).or_else(|| {
+                                style
+                                    .and_then(|s| s.highlight)
+                                    .map(|color| rgb(crate::theme::highlight_color(color)).into())
+                            })
                         },
                         underline: if display_marked
                             .as_ref()

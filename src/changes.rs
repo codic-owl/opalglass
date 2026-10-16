@@ -66,6 +66,49 @@ impl NoteChanges {
     }
 }
 
+/// Persist a complete recovery record before the first selected write.
+pub fn apply_batch(vault: &mut Vault, plans: &[NoteChanges]) -> (usize, Option<String>) {
+    let prepare = || -> Result<Vec<crate::history::BatchEntry>, String> {
+        let mut entries = vec![];
+        for plan in plans {
+            plan.validate(vault)?;
+            let before = vault.read(&plan.path).map_err(|e| e.to_string())?;
+            let next = edited(&before, &plan.edits)?;
+            entries.push(crate::history::BatchEntry {
+                path: plan.path.clone(),
+                before,
+                after: crate::history::hash(&next),
+            });
+        }
+        Ok(entries)
+    };
+    let entries = match prepare() {
+        Ok(entries) => entries,
+        Err(e) => return (0, Some(e)),
+    };
+    if entries.is_empty() {
+        return (0, None);
+    }
+    if let Err(e) = crate::history::checkpoint(&vault.root, entries) {
+        return (
+            0,
+            Some(format!("Could not create replacement recovery record: {e}")),
+        );
+    }
+    for (applied, plan) in plans.iter().enumerate() {
+        if let Err(e) = plan.apply(vault) {
+            return (
+                applied,
+                Some(format!(
+                    "{}: {e}. Use Undo last bulk replacement to recover applied notes.",
+                    plan.path.display()
+                )),
+            );
+        }
+    }
+    (plans.len(), None)
+}
+
 pub fn replace_preview(
     vault: &Vault,
     query: &str,
