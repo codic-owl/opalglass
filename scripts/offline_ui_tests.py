@@ -15,18 +15,18 @@ import tomllib
 
 root = Path(__file__).resolve().parents[1]
 host = next(line.split(": ", 1)[1] for line in subprocess.check_output(
-    ["rustc", "-vV"], text=True).splitlines() if line.startswith("host: "))
+    ["rustc", "-vV"], text=True, encoding="utf-8").splitlines() if line.startswith("host: "))
 metadata = json.loads(subprocess.check_output([
     "cargo", "metadata", "--offline", "--locked", "--format-version", "1",
     "--filter-platform", host,
-], cwd=root, text=True))
+], cwd=root, text=True, encoding="utf-8"))
 package = next(p for p in metadata["packages"] if p["name"] == "gpui")
 source = Path(package["manifest_path"]).parent
 repository = source.parents[1]
 destination = root / "target" / "offline-gpui-test-runtime"
 shutil.copytree(source, destination, dirs_exist_ok=True)
-manifest = tomllib.loads((source / "Cargo.toml").read_text())
-workspace = tomllib.loads((repository / "Cargo.toml").read_text())["workspace"]
+manifest = tomllib.loads((source / "Cargo.toml").read_text(encoding="utf-8"))
+workspace = tomllib.loads((repository / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
 
 # Materialize workspace inheritance so the copied package stands alone.
 for name, value in list(manifest["package"].items()):
@@ -79,12 +79,12 @@ for name, value in manifest.items():
         lines.extend(json.dumps(k) + " = " + value_text(v) for k, v in value.items())
     else:
         raise ValueError(f"Unsupported manifest section: {name}")
-(destination / "Cargo.toml").write_text("\n".join(lines))
+(destination / "Cargo.toml").write_text("\n".join(lines), encoding="utf-8")
 
 # Keep the path-patched dependency graph out of the committed CI lockfile.
 harness = root / "target" / "offline-ui-tests"
 harness.mkdir(parents=True, exist_ok=True)
-harness_manifest = tomllib.loads((root / "ui-tests/Cargo.toml").read_text())
+harness_manifest = tomllib.loads((root / "ui-tests/Cargo.toml").read_text(encoding="utf-8"))
 harness_manifest["dependencies"]["opalglass"]["path"] = str(root)
 harness_manifest["lib"] = {"path": str(root / "ui-tests/src/lib.rs")}
 harness_manifest["workspace"] = {}
@@ -92,7 +92,7 @@ harness_lines = []
 for name, items in harness_manifest.items():
     harness_lines.append("[" + name + "]")
     harness_lines.extend(json.dumps(k) + " = " + value_text(v) for k, v in items.items())
-(harness / "Cargo.toml").write_text("\n".join(harness_lines))
+(harness / "Cargo.toml").write_text("\n".join(harness_lines), encoding="utf-8")
 shutil.copy2(root / "ui-tests/Cargo.lock", harness / "Cargo.lock")
 
 print("Testing unchanged GPUI source with util/test-support omitted from its temporary manifest.", flush=True)

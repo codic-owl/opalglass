@@ -602,11 +602,12 @@ those desktop targets remain unverified.
 
 ## Verification
 
-Run both test suites before building the release application, matching CI:
+Run the checks before building the release application, matching CI:
 
 ```sh
 cargo fmt --all -- --check
 cargo fmt --manifest-path ui-tests/Cargo.toml -- --check
+python3 -X warn_default_encoding -W error::EncodingWarning -m unittest discover -s scripts/tests
 cargo clippy --workspace --locked --all-targets -- -D warnings
 cargo test --workspace --locked
 cargo test --locked --manifest-path ui-tests/Cargo.toml -- --test-threads=1
@@ -623,7 +624,7 @@ needed by the application. Its own committed lockfile keeps those dependencies
 reproducible. First use requires network access to download them.
 UI tests run one at a time because their independent simulated event loops share
 process-wide loader limits. This setting applies to the test harness only.
-The CI workflow builds release executables, runs both test suites, and produces
+The CI workflow builds release executables, runs the test suites, and produces
 unsigned packages on Ubuntu 22.04, Windows 2022, macOS Apple Silicon, and Intel
 macOS. Runner labels follow [GitHub's supported runner matrix](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 CI sets one `CARGO_TARGET_DIR` for both packages, allowing matching test-build
@@ -631,7 +632,7 @@ dependencies to be reused. A Rust dependency cache retains artifacts between
 runs, separated by runner image, architecture, Rust toolchain, dependency
 manifests/lockfiles and relevant build environment. GPUI's additional test features
 and the optimized release profile still need their own compilation artifacts.
-The release build and packaging run only after lint and both test suites pass.
+The release build and packaging run only after lint and all test suites pass.
 No job uses host-specific CPU tuning. These configured jobs are not evidence of
 successful Windows/macOS execution until they have actually run.
 

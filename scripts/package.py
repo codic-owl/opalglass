@@ -20,7 +20,7 @@ root = Path(__file__).resolve().parents[1]
 os_name = platform.system().lower()
 if os_name not in ('linux', 'darwin', 'windows'):
     parser.error('Packaging currently supports Linux, macOS and Windows')
-version = tomllib.loads((root / 'Cargo.toml').read_text())['package']['version']
+version = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))['package']['version']
 binary = args.binary or root / 'target/release' / ('opalglass.exe' if os_name == 'windows' else 'opalglass')
 if not binary.is_file() or not args.notices.is_file():
     parser.error('Build the release and run scripts/dependency_notices.py first')
@@ -60,10 +60,10 @@ with tempfile.TemporaryDirectory(prefix='package-', dir=args.output) as temporar
     shutil.copy2(args.notices, stage / 'THIRD_PARTY_NOTICES.txt')
     (stage / 'BUILD.json').write_text(json.dumps({
         'version': version, 'system': os_name, 'architecture': platform.machine(),
-        'rustc': subprocess.check_output(['rustc', '-vV'], text=True),
+        'rustc': subprocess.check_output(['rustc', '-vV'], text=True, encoding='utf-8'),
         'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
         'signed': False,
-    }, indent=2))
+    }, indent=2), encoding='utf-8')
     archive = Path(shutil.make_archive(str(args.output / name), 'gztar' if os_name == 'linux' else 'zip', temporary, name))
-    archive.with_name(archive.name + '.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')
+    archive.with_name(archive.name + '.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n', encoding='utf-8')
     print(archive)

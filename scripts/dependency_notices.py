@@ -13,13 +13,13 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 target = args.target or next(
     line.split(": ", 1)[1]
-    for line in subprocess.check_output(["rustc", "-vV"], text=True).splitlines()
+    for line in subprocess.check_output(["rustc", "-vV"], text=True, encoding="utf-8").splitlines()
     if line.startswith("host: ")
 )
 command = ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target]
 if args.offline:
     command.append("--offline")
-metadata = json.loads(subprocess.check_output(command, cwd=root, text=True))
+metadata = json.loads(subprocess.check_output(command, cwd=root, text=True, encoding="utf-8"))
 sections = [f"Opalglass dependency notices\nTarget: {target}\n"]
 missing = []
 for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
@@ -45,7 +45,7 @@ for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version
     if not files:
         missing.append(f"{package['name']} {package['version']}")
     for file in sorted(files):
-        sections.append(f"\n--- {file.name} ---\n{file.read_text(errors='replace')}\n")
+        sections.append(f"\n--- {file.name} ---\n{file.read_text(encoding='utf-8', errors='replace')}\n")
 sections.append("\nPackages without a discovered license file:\n" + "\n".join(missing))
 output = root / args.output
 output.parent.mkdir(parents=True, exist_ok=True)

@@ -122,6 +122,9 @@ are relative, not measured schedules.
 - [ ] **Run the configured native CI jobs successfully.**
   Linux, Windows, macOS Apple Silicon and Intel macOS. Run core/UI tests and
   build actual release packages. Configuration alone is not execution evidence.
+  Successful runs have been reported for Linux and macOS Apple Silicon.
+  Windows reached packaging; its notices encoding fix and a successful Intel
+  macOS run remain to be confirmed.
 
 - [ ] **Validate packaged applications on native desktops.**
   Cover launch, folder picker, editing, clipboard, drag/drop, save/conflicts,
