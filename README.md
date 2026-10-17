@@ -9,59 +9,195 @@ This is an early desktop application. Linux is tested locally; Windows and macOS
 now have native CI build/test/package jobs, pending their first successful runs
 and real desktop validation. Full Obsidian rendering parity is not established.
 
-## Run
+## Coming from Obsidian
 
-Use Rust **1.90.0** or newer. GPUI is pinned to a specific Apache-2.0 revision, and
-the application's dependency versions are recorded in `Cargo.lock`.
+Open a copy of your existing vault with **Open vault**; no export or conversion is
+required for Markdown notes. Start with a backup or a test copy while evaluating
+this early version. Opalglass edits the same files on disk, autosaves by default,
+and updates resolved links during rename/move actions. See
+[Everyday workflows](#everyday-workflows) for saving, conflicts and recovery.
+It is an alternative Markdown workspace, with a
+smaller feature set than Obsidian.
+
+Ordinary Markdown, wiki links and display aliases (`[[Note|label]]`), backlinks,
+tags, heading/block navigation, Reading/Split note embeds, images, callouts,
+footnotes and YAML properties are available. These are implemented features,
+with remaining differences described below; opening a vault does not guarantee
+that every note looks or behaves as it does in Obsidian.
+
+| If your vault uses… | Current limitation |
+| --- | --- |
+| Community plugins and plugin-generated content | No plugin/module system or Obsidian plugin compatibility. Dataview queries, Templater scripts and other plugin-specific behavior do not execute. |
+| Obsidian settings, workspaces, themes, CSS snippets, hotkeys and bookmarks | `.obsidian/` is ignored. Its configuration is not imported; configure Opalglass separately. |
+| Obsidian Sync or Publish | No built-in sync or publishing service, and no Obsidian service integration. |
+| Local/global graph | No graph view. Backlinks and note links are available. |
+| Canvas or Bases | No `.canvas` or `.base` viewer/editor. Existing files remain on disk. |
+| Math and Mermaid | No rendered LaTeX math or Mermaid diagrams. Their source can still be edited. |
+| HTML/CSS in notes | No HTML layout engine or custom CSS rendering. |
+| Audio, video and PDF embeds | No inline player or PDF viewer/page controls. PDFs can be imported as attachments and opened in the system viewer. |
+| Embedded search results or advanced search expressions | No rendered search-query blocks or full Obsidian query language. Vault search supports words, a fully quoted phrase, prefixes, path lookup and standalone tag filtering. Mixed quoted clauses, combined text/tag queries and advanced operators are absent; only saved text is indexed. |
+| YAML `aliases` as alternative link targets | Frontmatter aliases are not used to resolve links. Use a filename/path target with an optional display label, such as `[[Note\|label]]`. Ambiguous filenames need explicit paths. |
+| Custom daily-note/template workflows | Daily notes use `Daily/YYYY-MM-DD.md`, optionally based on `Templates/Daily.md`. Templates come from `Templates/` and support `{{date}}`, `{{time}}` and `{{title}}`; Obsidian folder/date-format settings and scripts are not imported. |
+| Full Live Preview transclusion and exact Markdown presentation | Note/section/block embeds render in Reading/Split; Editing Preview keeps their Markdown editable. Inline image flow, images in table cells, some footnote/highlight edge cases, typography and exhaustive syntax-highlighting parity differ. Animated images show their first frame; SVG filters and nested SVG images are unsupported. |
+| Hidden files, symlinked notes or configured exclusions | Dot-prefixed files/folders and symlinks are skipped. Obsidian exclusion settings and `.gitignore` rules are not imported; other visible `.md` files are scanned. |
+| Obsidian file recovery or version history | Existing history is not imported. Opalglass captures its own saved versions in `.opalglass-history/`, including history across its own note/folder moves. |
+
+Your `.obsidian/` folder is left in place. Opalglass stores its own preferences,
+tabs and recovery data separately, and builds a disposable search index outside
+the vault. Notes are discovered by their `.md` extension, including `.MD`;
+non-Markdown files do not become editable notes.
+
+Linux has local build and desktop verification. Windows/macOS CI is configured,
+but successful native runs and desktop validation are still pending. Real IME
+composition and screen-reader accessibility remain unverified; keyboard tests do
+not establish accessibility support. See [Current boundaries](#current-boundaries),
+the [35-family compatibility inventory](tests/fixtures/obsidian-coverage.json),
+and [V1 TODO](<V1 TODO.md>) for details and release gates. Full Obsidian parity is
+not claimed.
+
+## Build and run
+
+Use Rust **1.90.0**, the toolchain used by our CI and local verification. Install
+Rust through [rustup](https://rust-lang.org/tools/install/) and Git, plus the
+native prerequisites for your platform below. GPUI is pinned to a specific
+Apache-2.0 revision; dependency versions are recorded in `Cargo.lock`. The first
+build needs network access to download crates and the pinned Git dependencies.
 
 ```sh
-cargo run --locked -- /path/to/your/vault
+git clone https://github.com/codic-owl/opalglass.git
+cd opalglass
+rustup toolchain install 1.90.0
+rustup override set 1.90.0
 ```
 
-Without a path, the app reopens the last vault and its saved tabs. On first launch,
-run `cargo run --locked` and choose **Open vault** (or press **Ctrl O**) to
-browse for your vault folder. If the system folder picker is unavailable, a path
-entry dialog appears instead. The selected directory must already exist.
-The development profile optimizes the app and all runtime dependencies at
-`opt-level = 2`. The first build after a profile change recompiles affected crates;
-subsequent builds reuse them. Initial builds take longer, but native rendering
-and tab interactions benefit. Development assertions and overflow checks remain
-enabled. Release builds retain ThinLTO and one code generation unit.
-Both profiles use Rust's default CPU baseline for the selected target, without
-`target-cpu=native` or host-specific instruction flags. Each supported operating
-system and architecture still needs its own build.
+Build natively on each operating system. Our CI configuration targets Linux
+x86-64, Windows x86-64/MSVC, macOS Apple Silicon and Intel macOS. Windows/macOS
+jobs still need successful runs and real desktop validation; other architectures
+are not verified. Adding a Rust target on Linux alone does not supply the macOS
+or Windows SDKs and native libraries. The configured
+[GitHub Actions workflow](.github/workflows/check.yml) can build on native runners.
 
-Try the sample vault without changing the included examples:
+### Linux
+
+GPUI needs an accessible X11 or Wayland desktop and a Vulkan-capable graphics
+driver. On Ubuntu/Debian, install the build dependencies:
 
 ```sh
-cp -R examples/vault /tmp/opalglass-demo
-cargo run --locked -- /tmp/opalglass-demo
+sudo apt-get update
+sudo apt-get install -y git build-essential clang cmake pkg-config libssl-dev \
+  libfontconfig1-dev libfreetype6-dev libxcb1-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libwayland-dev libvulkan-dev fonts-dejavu-core
 ```
 
-Build an optimized Linux executable:
+Install your distribution's Vulkan graphics driver as well. From the cloned
+repository, build and launch:
 
 ```sh
 cargo build --release --locked
 ./target/release/opalglass /path/to/your/vault
 ```
 
-The executable is `target/release/opalglass`. It uses your system's desktop and
-graphics libraries; it is not a standalone cross-distribution bundle.
+The executable uses your system's desktop and graphics libraries; it is not a
+standalone cross-distribution bundle. If a stale `WAYLAND_DISPLAY` variable is
+set in an X11 session, use
+`env -u WAYLAND_DISPLAY ./target/release/opalglass /path/to/vault`.
 
-### Linux prerequisites
+### macOS — Apple Silicon or Intel
 
-GPUI needs an accessible X11 or Wayland desktop and a Vulkan-capable graphics
-driver. On Ubuntu/Debian, install the build dependencies:
+Install the full [Xcode application](https://developer.apple.com/xcode/), launch
+it once to finish setup, then select its developer tools. Command Line Tools
+alone do not provide the Metal compiler required by this pinned GPUI version.
 
 ```sh
-sudo apt-get install clang cmake pkg-config libssl-dev libfontconfig1-dev \
-  libfreetype6-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
-  libwayland-dev libvulkan-dev fonts-dejavu-core
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+xcrun --find metal
+xcrun --find metallib
+export MACOSX_DEPLOYMENT_TARGET=13.0
+cargo build --release --locked
+./target/release/opalglass /path/to/your/vault
 ```
 
-Your distribution's Vulkan driver package is also needed at runtime. If a stale
-`WAYLAND_DISPLAY` variable is set in an X11 session, launch with
-`env -u WAYLAND_DISPLAY cargo run --locked -- /path/to/vault`.
+If Xcode reports that the Metal toolchain is missing, install it with
+`xcodebuild -downloadComponent MetalToolchain` and retry. The deployment target
+matches our package's macOS 13 minimum; it is not a claim of validation on every
+macOS version. Use a native ARM64 Rust toolchain on Apple Silicon
+(`aarch64-apple-darwin`) or x86-64 on Intel (`x86_64-apple-darwin`). Each produces
+its own executable; the packaging script does not combine a universal binary.
+
+### Windows — x86-64, MSVC
+
+Install Git, rustup and **Visual Studio 2022 or Build Tools 2022** with the
+[Desktop development with C++ workload](https://learn.microsoft.com/en-us/cpp/build/vscpp-step-0-installation?view=msvc-170),
+including the MSVC x64/x86 compiler and a Windows 10/11 SDK. Open an **x64
+Developer PowerShell** with those tools available, then enter the cloned
+repository. WSL builds follow the Linux instructions and produce Linux binaries.
+
+The release build needs the Windows SDK's `fxc.exe` shader compiler. Select an
+installed x64 copy explicitly so the pinned GPUI build can find it:
+
+```powershell
+rustup toolchain install 1.90.0-x86_64-pc-windows-msvc
+rustup override set 1.90.0-x86_64-pc-windows-msvc
+where.exe cl
+$fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" |
+    Sort-Object FullName -Descending | Select-Object -First 1
+if (-not $fxc) { throw 'Install the Windows SDK with the fxc.exe shader compiler.' }
+$env:GPUI_FXC_PATH = $fxc.FullName
+cargo build --release --locked
+.\target\release\opalglass.exe 'C:\path\to\your\vault'
+```
+
+The executable is `target\release\opalglass.exe`. If `cl` is missing, reopen the
+x64 developer shell or repair the C++ workload before building.
+
+### Development and first launch
+
+On any platform, `cargo run --locked` builds and launches the development app.
+Add `-- /path/to/vault` (or a quoted Windows path) to open a particular vault.
+Without a path, the app reopens the last vault and its saved tabs. On first
+launch, choose **Open vault** (or press **Ctrl O**) to browse for an existing
+vault directory. If the system folder picker is unavailable, a path-entry dialog
+appears instead.
+
+To try the sample vault, copy `examples/vault` somewhere writable and open that
+copy. For example, on Linux/macOS:
+
+```sh
+cp -R examples/vault /tmp/opalglass-demo
+cargo run --locked -- /tmp/opalglass-demo
+```
+
+The development profile optimizes the app and runtime dependencies at
+`opt-level = 2`, with assertions and overflow checks enabled. Release uses
+ThinLTO and one code generation unit. Both use Rust's default CPU baseline for
+the selected target, without `target-cpu=native` or host-specific instruction
+flags. First builds take longer; subsequent builds reuse compiled dependencies.
+
+### Package a native build
+
+After `cargo build --release --locked`, use **Python 3.11 or newer**; CI uses
+3.12. Ubuntu 22.04's default Python 3.10 cannot run these packaging scripts.
+Run from the repository root on Linux/macOS:
+
+```sh
+python3 scripts/dependency_notices.py
+python3 scripts/package.py
+```
+
+On Windows, with Python 3.12 installed through the Python launcher:
+
+```powershell
+py -3.12 scripts/dependency_notices.py
+py -3.12 scripts/package.py
+```
+
+Archives and `.sha256` checksums appear in `target/packages/`: a Linux `.tar.gz`
+with a binary, desktop entry and icon; a Windows `.zip` with the executable; or
+a macOS `.zip` containing `Opalglass.app`. License notices and build metadata
+are included. These are unsigned native archives, with no Windows installer or
+macOS signing/notarization. System libraries are not bundled. Native install and
+runtime verification remain [release gates](<V1 TODO.md>).
 
 ## Included
 
@@ -490,21 +626,10 @@ macOS. Runner labels follow [GitHub's supported runner matrix](https://docs.gith
 No job uses host-specific CPU tuning. These configured jobs are not evidence of
 successful Windows/macOS execution until they have actually run.
 
-To package a native build locally:
-
-```sh
-cargo build --release --locked
-python3 scripts/dependency_notices.py
-python3 scripts/package.py
-```
-
-Archives and SHA-256 checksums appear in `target/packages/`. Linux gets a tarball
-with a binary, desktop entry and icon; Windows gets a ZIP; macOS gets a ZIP
-containing an `.app` bundle. License notices and build metadata are included.
-These packages are unsigned and are not automatically published. Linux packages
-still require the desktop/graphics libraries listed above; no cross-distribution
-standalone compatibility is claimed. Signing/notarization and native installation
-checks remain release work.
+Use the [native packaging instructions](#package-a-native-build) to create
+unsigned archives locally. CI uploads the same archives as workflow artifacts;
+it does not automatically publish GitHub Releases. Native installation,
+signing/notarization and cross-distribution verification remain release work.
 
 File moves use atomic no-replace rename on Linux/macOS and
 [MoveFileW on Windows](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefilew),
