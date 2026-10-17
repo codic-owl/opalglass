@@ -1,6 +1,4 @@
 /target/
 /ui-tests/target/
-/ui-tests/Cargo.lock
 *.swp
 .DS_Store
-

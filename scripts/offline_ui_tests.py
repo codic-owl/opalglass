@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the UI harness using cached GPUI, without its unused Git fixture feature.
 
-Only a temporary Cargo manifest changes. Application and GPUI Rust source files
-are untouched. The normal CI harness uses the unmodified upstream manifest.
+Temporary Cargo manifests and a separate lockfile change. Application and GPUI
+Rust source files and the committed UI lockfile are untouched. The normal CI
+harness uses the unmodified upstream manifest.
 """
 import json
 from pathlib import Path
@@ -78,9 +79,25 @@ for name, value in manifest.items():
     else:
         raise ValueError(f"Unsupported manifest section: {name}")
 (destination / "Cargo.toml").write_text("\n".join(lines))
+
+# Keep the path-patched dependency graph out of the committed CI lockfile.
+harness = root / "target" / "offline-ui-tests"
+harness.mkdir(parents=True, exist_ok=True)
+harness_manifest = tomllib.loads((root / "ui-tests/Cargo.toml").read_text())
+harness_manifest["dependencies"]["opalglass"]["path"] = str(root)
+harness_manifest["lib"] = {"path": str(root / "ui-tests/src/lib.rs")}
+harness_manifest["workspace"] = {}
+harness_lines = []
+for name, items in harness_manifest.items():
+    harness_lines.append("[" + name + "]")
+    harness_lines.extend(json.dumps(k) + " = " + value_text(v) for k, v in items.items())
+(harness / "Cargo.toml").write_text("\n".join(harness_lines))
+shutil.copy2(root / "ui-tests/Cargo.lock", harness / "Cargo.lock")
+
 print("Testing unchanged GPUI source with util/test-support omitted from its temporary manifest.", flush=True)
 subprocess.run([
-    "cargo", "test", "--offline", "--manifest-path", "ui-tests/Cargo.toml",
+    "cargo", "test", "--offline", "--manifest-path", str(harness / "Cargo.toml"),
+    "--target-dir", str(root / "ui-tests/target"),
     "--config", 'patch."https://github.com/zed-industries/zed".gpui.path=' + json.dumps(str(destination)),
     *sys.argv[1:],
 ], cwd=root, check=True)

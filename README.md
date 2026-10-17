@@ -604,8 +604,8 @@ those desktop targets remain unverified.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo test --workspace --locked
 cargo build --release --locked
 ```
 
@@ -615,11 +615,12 @@ folder actions, context menus, inline naming, drag-and-drop moves, tab ordering 
 closing, keyboard navigation, resize/hide, and per-vault state restoration:
 
 ```sh
-cargo test --manifest-path ui-tests/Cargo.toml
+cargo test --locked --manifest-path ui-tests/Cargo.toml
 ```
 
 It lives in a separate package because GPUI's test support adds dependencies not
-needed by the application. First use requires network access to download them.
+needed by the application. Its own committed lockfile keeps those dependencies
+reproducible. First use requires network access to download them.
 The CI workflow builds release executables, runs both test suites, and produces
 unsigned packages on Ubuntu 22.04, Windows 2022, macOS Apple Silicon, and Intel
 macOS. Runner labels follow [GitHub's supported runner matrix](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
@@ -646,13 +647,16 @@ For the provided offline development cache, an adapter can run the same tests:
 python3 scripts/offline_ui_tests.py
 ```
 
-It copies GPUI into `target/` and changes only its temporary build manifest to
-omit `util/test-support`, an unused Git-repository fixture dependency. GPUI and
-application Rust source remain unchanged. Normal CI uses GPUI's original
-manifest. These tests use GPUI's simulated window and text system, not a GPU.
+It copies GPUI into `target/` and changes its temporary build manifest to omit
+`util/test-support`, an unused Git-repository fixture dependency. A separate
+temporary harness manifest and lockfile keep this patch out of the committed UI
+lockfile. GPUI and application Rust source remain unchanged. Normal CI uses
+GPUI's original manifest. These tests use GPUI's simulated window and text
+system, not a GPU.
 
-Verified locally: Linux compilation, core unit tests, GPUI interaction tests using
-the offline adapter, and Clippy. Native desktop checks use isolated fixture vaults
+Verified locally: Linux compilation, core/search unit tests, GPUI interaction
+tests against the unmodified pinned upstream dependency, and Clippy. Native
+desktop checks use isolated fixture vaults
 outside the sandbox, including Reading/Split layout, clipboard image paste, file
 drop, properties, external comparisons, and clean-note refresh. The simulated IME
 tests cover UTF-16 composition, cancellation, selection and undo, but do not
