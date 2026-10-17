@@ -8,6 +8,7 @@ pub mod document;
 pub mod editing;
 pub mod footnotes;
 pub mod history;
+pub mod images;
 mod inline;
 mod inline_notes;
 pub mod links;

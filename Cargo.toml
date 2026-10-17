@@ -18,6 +18,12 @@ mimalloc = "=0.1.52"
 serde_yaml_ng = "=0.10.0"
 similar = "=2.7.0"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "qoi"] }
+resvg = { version = "=0.45.1", default-features = false, features = ["text", "system-fonts"] }
+roxmltree = "=0.20.0"
+reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "951c770a32f1998d6e999cef3e59e0013e6c4415", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
+tokio = { version = "=1.47.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+futures = "=0.3.31"
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
 
 [target.'cfg(unix)'.dependencies]

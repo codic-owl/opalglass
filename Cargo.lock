@@ -3578,10 +3578,15 @@ dependencies = [
 name = "opalglass"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "gpui",
+ "image",
  "mimalloc",
  "opalglass-search",
  "pulldown-cmark",
+ "reqwest",
+ "resvg",
+ "roxmltree",
  "rustix 1.1.2",
  "serde",
  "serde_json",
@@ -3591,6 +3596,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "time",
+ "tokio",
  "unicode-segmentation",
  "windows-sys 0.61.1",
 ]
