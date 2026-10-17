@@ -30,7 +30,7 @@
         "vault::tests::failed_link_write_rolls_back_previous_edits_and_preserves_external_change"
       ],
       "limits": [
-        "Backlinks remain wiki based. Ambiguous bare names require an explicit path."
+        "Incoming backlinks include wiki and resolved Markdown/reference links. Ambiguous bare names require an explicit path."
       ]
     },
     {
@@ -43,7 +43,20 @@
         "Native nested and foldable Reading callouts",
         "Custom Unicode task markers with undoable Reading and keyboard toggles",
         "Named and inline Reading footnotes with document numbering, formatted footer definitions, and forward/return navigation",
-        "Background syntax coloring in Reading, Source and Live Preview, with staged full layout and a bounded decoration cache"
+        "Background syntax coloring in Reading, Source and Live Preview, with staged full layout and a bounded decoration cache",
+        "Bounded table-cell display slices with shared complete text and preserved source selection/copy",
+        "Requested local-image width and width\u00d7height with proportional narrow-pane layout",
+        "Asynchronous bounded HTTP(S) image loading/decoding/cache with retry, cancellation and scroll-anchor preservation",
+        "Editing Preview typed/nested callout controls with compact virtual row folding and complete raw-source preservation",
+        "Compact hidden comment/reference/unused-definition source rows with physical scroll mapping",
+        "Shared raised footnote references and numbered Editing Preview definitions/backlinks, including nested ownership",
+        "Mixed-format split-scroll synchronization rejects stale deferred corrections after navigation",
+        "Reading/Split whole-note, heading and block transclusion with source-relative actions and saved/unsaved source refresh",
+        "Bounded background embedded-document cache with persistent visible ancestor leases, measured-row prefetch and silent orphan cancellation",
+        "Compact interval callout/footer projections without per-document-row index allocations",
+        "Recognized block-ID markers hidden in Reading/Editing Preview with raw source, caret mapping and navigation preserved",
+        "Duplicate block IDs keep the first navigation target while hiding every recognized marker",
+        "Embedded footnote returns carry destinations through asynchronous source opening and preparation, rejecting stale source offsets and superseded navigation"
       ],
       "evidence": [
         "tests/fixtures/obsidian-coverage.json",
@@ -59,28 +72,56 @@
         "workspace::tests::rendering::custom_reading_tasks_preserve_unicode_markers_on_undo",
         "syntax::tests",
         "examples/syntax_benchmark.rs",
-        "workspace::tests::rendering::syntax_colors_arrive_after_first_paint_and_refresh_after_edits"
+        "workspace::tests::rendering::syntax_colors_arrive_after_first_paint_and_refresh_after_edits",
+        "tables::tests",
+        "images::tests",
+        "workspace::tests::tables",
+        "workspace::tests::images",
+        "images::http::tests",
+        "images::decode::tests",
+        "workspace::tests::remote_images",
+        "workspace::tests::remote_geometry",
+        "workspace::tests::remote_network",
+        "live::context::callouts::tests",
+        "live::context::definitions::tests",
+        "editor::visibility::tests",
+        "editor::callout_tests",
+        "editor::visibility_tests",
+        "workspace::tests::live::mixed_editing_preview_keeps_split_scroll_and_mode_transitions_on_source_anchors",
+        "embeds::tests",
+        "callouts::projection::tests",
+        "prepared::block_markers_tests",
+        "editor::block_markers_tests",
+        "workspace::tests::embeds",
+        "workspace::tests::embedded_documents",
+        "workspace::tests::reading_origins",
+        "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json",
+        "workspace::tests::embeds::footnote_navigation"
       ],
       "limits": [
-        "See all missing/partial families in the coverage inventory. In particular superscript/Live Preview footnotes, exhaustive syntax-language coverage, math, Mermaid, HTML, transclusion and media are incomplete or absent.",
-        "Live Preview block widgets are not equivalent to Reading.",
-        "Supported means implemented, not exhaustively parity verified."
+        "See missing/partial families in the inventory. Footnote label-case/empty-definition semantics, exhaustive code languages, math, Mermaid, HTML, media and full Live Preview transclusion remain incomplete or absent.",
+        "Essential Live Preview callouts, comments and footnotes pass automated and representative native Linux checks; exact visual/layout parity is not established.",
+        "Supported means implemented, not exhaustively parity verified.",
+        "Remote animations show their first frame. SVG resource/complexity limits apply; filters, SVGZ and nested image resources are not supported. Native platform GPU cleanup still needs release verification."
       ]
     },
     {
       "requirement": "Saved note history",
-      "status": "verified locally with limitation",
+      "status": "verified locally",
       "implementation": [
         "Durable snapshots of prior saved contents",
         "Version comparison and undoable restore command",
-        "Per-note retention, hash validation and symlink rejection"
+        "Per-note retention, hash validation and symlink rejection",
+        "Durable identities follow note/folder moves and recover interrupted renames",
+        "Overlapping captures retain the selected history identity for duplicate detection and pruning during moves and old-name reuse"
       ],
       "evidence": [
         "history::tests",
-        "workspace::tests"
+        "history::identity::tests",
+        "workspace::tests::history::saved_versions_follow_ui_moves_and_restore_into_the_renamed_tab"
       ],
       "limits": [
-        "History keys follow paths; older versions remain under the previous path after rename."
+        "Native Windows/macOS move and crash-recovery verification remains a release gate."
       ]
     },
     {
@@ -158,26 +199,158 @@
     }
   ],
   "latest_checks": {
-    "core_tests": 92,
+    "core_tests": 184,
     "search_tests": 16,
-    "ui_tests": 80,
+    "ui_tests": 156,
     "ignored_ui_profiling_tests": 3,
     "clippy": "pass",
     "real_vault_audit": {
       "notes": 4425,
       "source_bytes": 370107531,
-      "prepared_rows": 1268134,
+      "prepared_rows": 1268132,
       "references": 13386,
-      "evidence": "target/markdown-audit/real-vault-syntax-final.json",
+      "evidence": "target/markdown-audit/v1-embed-vault.json",
       "checks": "Source bounds and UTF-8, nonoverlapping source rows, display spans, folded/footer projection round trips, and footnote return positions, syntax-color source spans"
     },
     "real_vault_modifications": false,
-    "release_build": "pass",
-    "linux_package": "Archive checksum, executable hash, bundled Oniguruma notice, icon, and extracted --help verified",
+    "release_build": "Historical pass; not repeated for Priority 1/2. Release verification remains open.",
+    "linux_package": "Historical archive/checksum/help verification; packaging must be repeated after these additions.",
     "native_callout": "Actual release X11 pointer expand verified; target/workflow-audit/release-runs/run-3495pi3f/reading-callouts-expanded.png",
     "native_footnotes": "Actual release X11 pointer jump and second-reference return verified; target/workflow-audit/release-runs/run-3iiold_o/footnotes-return.png",
     "syntax_benchmark": "target/markdown-audit/syntax-benchmark.jsonl",
-    "native_syntax": "Release Reading, Split/Live Preview and Source screenshots inspected; target/workflow-audit/release-runs/run-8r9w326z/"
+    "native_syntax": "Release Reading, Split/Live Preview and Source screenshots inspected; target/workflow-audit/release-runs/run-8r9w326z/",
+    "evidence_scope": "Current audit code passes core/application/search/UI harness tests, Clippy, formatting, the read-only real-vault structural audit, development build and CLI help smoke check. The recorded Priority 1/2 native run uses a pre-audit development binary under isolated Linux KWin; it predates the three audit fixes and does not verify the rebuilt binary. Earlier release/package/syntax screenshots remain historical evidence, not final release verification.",
+    "formatting": "pass",
+    "application_unit_tests": 18,
+    "native_priority_1_2": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json",
+    "native_binary_sha256": "9b7cf5ce47323315de08476f869188fd8cf49f63c962960ba052d2b2129d68ab",
+    "logs": {
+      "core": "/tmp/opalglass-audit-core.log",
+      "ui": "/tmp/opalglass-audit-ui.log",
+      "clippy": "/tmp/opalglass-audit-clippy.log",
+      "build": "/tmp/opalglass-audit-build.log",
+      "real_vault": "/tmp/opalglass-audit-vault.log"
+    },
+    "native_run_predates_audit_fixes": true,
+    "development_build": {
+      "status": "pass",
+      "command": "cargo build --offline --locked --bin opalglass",
+      "cli_help_smoke": "pass",
+      "binary_sha256": "2e6a8adddad47afdd9127a60ddc8b25aba1b340640e4975458f05f916ea3864c",
+      "native_ui_rerun_after_audit": false
+    }
   },
-  "goal_complete": false
+  "remote_image_verification": {
+    "date": "2026-10-17",
+    "core_and_search_tests": 160,
+    "ui_tests": 100,
+    "ignored_ui_profiling_tests": 3,
+    "http_fixtures": "Loopback redirects, cancellation, status and download bounds; real HTTP image through Reading",
+    "https_probe": {
+      "command": "cargo run --offline --locked --example remote_image_probe -- https://upload.wikimedia.org/wikipedia/commons/7/70/Example.png",
+      "result": {
+        "width": 172,
+        "height": 178,
+        "decoded_bytes": 122464,
+        "frames": 1,
+        "seconds": 0.687656092
+      },
+      "scope": "Fetch and decode pipeline; no native desktop or visual parity claim"
+    },
+    "native_platform_release_gates_remain_open": true,
+    "scope": "Historical remote-image milestone checks; latest_checks contains the current full-suite totals"
+  },
+  "editing_preview_verification": {
+    "date": "2026-10-17",
+    "scope": "Current automated projection, source preservation, simulated composition and actual widget interactions pass. Recorded native Linux visual/input checks passed on a development binary before the three audit fixes. Exact Obsidian visual parity, real IME, screen readers and other native platforms are not established.",
+    "logs": {
+      "core": "/tmp/opalglass-audit-core.log",
+      "ui": "/tmp/opalglass-audit-ui.log",
+      "clippy": "/tmp/opalglass-audit-clippy.log"
+    },
+    "embed_status": "Reading/Split whole-note, heading, block and same-note embeds implemented and verified through actual widgets and the native report; background loading, source-scoped actions, saved/dirty refresh, bounded caches and cycle/depth/instance limits. Live Preview transclusion remains outside this supported subset.",
+    "historical_unmapped_desktop_attempt": {
+      "status": "unverified",
+      "reason": "The isolated generated test window stayed unmapped/hidden on the current KDE desktop; native captures were entirely transparent.",
+      "evidence": "target/workflow-audit/release-runs/run-vvz_78g_/verification.json",
+      "native_input_verified": false,
+      "real_ime_verified": false,
+      "test_processes_and_temporary_compositor_script_cleaned_up": true
+    },
+    "native": {
+      "status": "passed_locally",
+      "evidence": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json",
+      "binary_sha256": "9b7cf5ce47323315de08476f869188fd8cf49f63c962960ba052d2b2129d68ab",
+      "checks": [
+        "callout_and_footnote_layout",
+        "nested_mouse_fold",
+        "unicode_caret_exact_source_insertion_saved",
+        "undo_restored_original_sha256",
+        "native_clipboard_exact_519_byte_preview_source",
+        "raw_reading_editing_split_modes",
+        "long_61598_byte_locked_scroll_start_and_end",
+        "whole_section_block_embeds",
+        "nested_embed",
+        "local_image_requested_width_160",
+        "embedded_footnote_navigation",
+        "nested_link_opens_target",
+        "whole_section_block_open_source_actions",
+        "block_identifier_hidden_in_all_reading_embeds",
+        "block_identifier_retained_on_active_editing_preview_line",
+        "block_identifier_retained_in_raw_source",
+        "native_clipboard_exact_513_byte_embed_source_including_identifier",
+        "nine_level_embed_chain_stable_at_depth_limit",
+        "all_generated_markdown_hashes_unchanged"
+      ],
+      "real_ime_verified": false,
+      "other_native_platforms_verified": false,
+      "isolated_compositor": true,
+      "user_desktop_policy_fixed": false,
+      "test_processes_cleaned_up": {
+        "launcher_app_and_compositor_wait_completed": true,
+        "compositor_stop_marker": true
+      },
+      "predates_audit_fixes": true
+    }
+  },
+  "priority_1_2_complete": true,
+  "release_ready": false,
+  "full_obsidian_parity": false,
+  "audit_verification": {
+    "date": "2026-10-17",
+    "fixed_regressions": [
+      {
+        "issue": "Embedded footnote return destination lost while opening an unopened source note",
+        "tests": "workspace::tests::embeds::footnote_navigation",
+        "coverage": "Return beyond the opening prefix, changed saved source and cancellation by newer navigation"
+      },
+      {
+        "issue": "Duplicate block-ID markers remained visible after the first occurrence",
+        "tests": [
+          "prepared::block_markers_tests",
+          "editor::block_markers_tests"
+        ],
+        "coverage": "All recognized markers hide; first-target lookup and complete source editing/copying remain intact"
+      },
+      {
+        "issue": "History capture could read or prune using a different identity after concurrent move and old-name reuse",
+        "tests": [
+          "history::identity::tests::capture_keeps_its_selected_identity_when_another_app_moves_and_reuses_the_path",
+          "history::identity::tests::capture_prunes_only_its_selected_identity_after_a_move_and_old_name_reuse"
+        ],
+        "red_green": "Both deterministic interleaving tests fail without the fix in an isolated source snapshot and pass with it",
+        "logs": [
+          "/tmp/opalglass-audit-history-red.log",
+          "/tmp/opalglass-audit-history-green.log"
+        ]
+      }
+    ],
+    "commit_snapshots": {
+      "image_infrastructure": "All-target check and 18 image pipeline tests pass",
+      "markdown_and_ui": "All-target check and 155 UI tests pass, with 3 profiling tests retained as ignored; final history commit adds the 156th UI test"
+    },
+    "structure": "Affected new Rust source/test modules stay below 500 lines; no repository Rust source/test file exceeds 1000 lines",
+    "native_evidence_scope": "Recorded native evidence is retained with its original binary hash; no native rerun is claimed for the audit fixes",
+    "local_evidence_note": "Generated target artifacts and /tmp logs are local evidence, not files shipped in Git"
+  }
 }

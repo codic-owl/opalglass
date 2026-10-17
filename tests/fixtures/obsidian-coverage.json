@@ -130,7 +130,7 @@
         "prepared_rows": "target/markdown-audit/opalglass.json",
         "native_combined_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts.png"
       },
-      "markdown": "==marked== ==🔴red== ==🟠orange== ==🟡yellow== ==🟢green== ==🔵blue== ==🟣purple==\n\n==outer **bold** and `code`== [==link==](Target.md)\n\n\\==escaped== ==unclosed\n\n== spaced == ===triple=== ==== ==🔴==\n\n==across\nlines==\n\n[[Target|==alias==]] ==#work==\n\n==\n\nseparate==\n\n==🔴==",
+      "markdown": "==marked== ==\ud83d\udd34red== ==\ud83d\udfe0orange== ==\ud83d\udfe1yellow== ==\ud83d\udfe2green== ==\ud83d\udd35blue== ==\ud83d\udfe3purple==\n\n==outer **bold** and `code`== [==link==](Target.md)\n\n\\==escaped== ==unclosed\n\n== spaced == ===triple=== ==== ==\ud83d\udd34==\n\n==across\nlines==\n\n[[Target|==alias==]] ==#work==\n\n==\n\nseparate==\n\n==\ud83d\udd34==",
       "parity_verified": false,
       "notes": "Reading and Live Preview support highlights, six color emoji prefixes, nested inline styles, source-preserving editing, escaped markers and paragraph boundaries. Wiki aliases remain literal, matching the captured reference. Unusual consecutive equals-marker runs still differ; exact delimiter parity is not claimed."
     },
@@ -337,7 +337,7 @@
         "prepared_rows": "target/markdown-audit/opalglass.json",
         "native_combined_screenshot": "target/workflow-audit/release-runs/run-xisn17z0/reading-commonmark.png"
       },
-      "markdown": "- [ ] Pending\n- [x] Complete\n- [?] Question\n  - [ ] Nested task\n\n* [/] Alternate\n+ [-] Cancelled\n1. [é] Unicode\n2. [ ]\n\n- [?]no-space\n- [word] Not a task\n\n`- [?] literal`",
+      "markdown": "- [ ] Pending\n- [x] Complete\n- [?] Question\n  - [ ] Nested task\n\n* [/] Alternate\n+ [-] Cancelled\n1. [\u00e9] Unicode\n2. [ ]\n\n- [?]no-space\n- [word] Not a task\n\n`- [?] literal`",
       "parity_verified": false,
       "notes": "Standard and custom single-character task markers render across unordered and ordered lists. Non-space markers are checked, matching the captured Obsidian fixture. Reading and keyboard toggles preserve Unicode and are undoable; bare markers without trailing whitespace remain literal. Exhaustive Reading and Live Preview parity is not established."
     },
@@ -346,7 +346,11 @@
       "family": "basic",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "inline::tests",
+        "vault::index::tests",
+        "editor::tests::bare_url_and_email_clicks_preserve_source_in_both_editor_modes"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -357,16 +361,20 @@
         "prepared_rows": "target/markdown-audit/opalglass.json",
         "native_combined_screenshot": null
       },
-      "markdown": "[named](https://example.com \"Title\") [reference][r] <https://example.com> <test@example.com>\n\n[r]: https://example.org \"Reference title\"\n\nBare https://example.com/path?x=1&y=2. (https://en.wikipedia.org/wiki/Foo_(bar)).\n\nwww.example.com example.com test@example.com root@localhost\n\nHTTP://example.com ftp://example.com mailto:test@example.com\n\nUnicode https://例え.テスト/道 and https://example.com/é.\n\n**https://example.com/bold** *https://example.com/italic*\n\n`https://example.com/code` [https://example.com/label](Target.md) [[Target|https://example.com/wiki]]\n\nhttps://example.com/?q=one&amp;x=two and https://example.com/a_b_c and https://example.com/a*b*c\n\nhttps\\://example.com/escaped and \\https://example.com/slash\n\n<span data-url=\"https://example.com/attribute\">HTML</span>\n\n```\nhttps://example.com/fenced\n```",
+      "markdown": "[named](https://example.com \"Title\") [reference][r] <https://example.com> <test@example.com>\n\n[r]: https://example.org \"Reference title\"\n\nBare https://example.com/path?x=1&y=2. (https://en.wikipedia.org/wiki/Foo_(bar)).\n\nwww.example.com example.com test@example.com root@localhost\n\nHTTP://example.com ftp://example.com mailto:test@example.com\n\nUnicode https://\u4f8b\u3048.\u30c6\u30b9\u30c8/\u9053 and https://example.com/\u00e9.\n\n**https://example.com/bold** *https://example.com/italic*\n\n`https://example.com/code` [https://example.com/label](Target.md) [[Target|https://example.com/wiki]]\n\nhttps://example.com/?q=one&amp;x=two and https://example.com/a_b_c and https://example.com/a*b*c\n\nhttps\\://example.com/escaped and \\https://example.com/slash\n\n<span data-url=\"https://example.com/attribute\">HTML</span>\n\n```\nhttps://example.com/fenced\n```",
       "parity_verified": false,
-      "notes": "Inline links, reference definitions and angle autolinks parse; bare URL linkification and reference definitions in Live Preview remain gaps. Incoming backlinks remain wiki-link based."
+      "notes": "Inline links, reference definitions and angle autolinks parse. Bare HTTP(S), www and email links use linkify in Reading and Editing Preview, preserving source offsets and excluding code and existing links. Incoming backlinks include used Markdown references. Editing Preview resolves document-wide reference destinations through shared context. Exhaustive URL delimiter parity remains a gap."
     },
     {
       "id": "inline_and_block_comments",
       "family": "basic",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "live::context::tests",
+        "editor::context_tests",
+        "workspace::tests::live"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -375,11 +383,12 @@
       },
       "opalglass_evidence": {
         "prepared_rows": "target/markdown-audit/opalglass.json",
-        "native_combined_screenshot": null
+        "native_combined_screenshot": null,
+        "pre_audit_native_verification": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json"
       },
       "markdown": "Visible %%hidden%% text.\n\n%%\n# Hidden heading\n\nHidden paragraph\n%%\n\n<!-- HTML comment -->\nAfter `%%literal%%`.",
       "parity_verified": false,
-      "notes": "Reading removes comments before block parsing and restores original source offsets. Single-line Live Preview comments and literal code delimiters are tested; full multi-line Live Preview parity is not established."
+      "notes": "Reading and Editing Preview share hidden ranges for multiline Obsidian and HTML comments; literal code remains visible. Editing reveals complete multiline constructs and retains source offsets. Completely hidden editor rows compact, including comment boundaries inside callouts, while genuine blank lines remain. Automated Unicode, selection, copy, undo and simulated-composition tests pass; representative native Linux input/layout checks pass; full parity remains open."
     },
     {
       "id": "footnotes_and_inline_footnotes",
@@ -402,11 +411,12 @@
         "native_navigation_screenshots": [
           "target/workflow-audit/release-runs/run-3iiold_o/footnotes-jump-settled.png",
           "target/workflow-audit/release-runs/run-3iiold_o/footnotes-return.png"
-        ]
+        ],
+        "pre_audit_native_verification": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json"
       },
       "markdown": "A reference[^n] and another[^n]. Inline ^[An inline footnote].\n\n[^n]: A **footnote** with detail.\n\nFormatted ^[**bold** and `code` and [link](Target.md)].\n\nEscaped \\^[literal] and `^[code]`.\n\nNested ^[outer [brackets] end].\n\nMultiline ^[first\nsecond].\n\nEmpty ^[].",
       "parity_verified": false,
-      "notes": "Reading numbers named and inline footnotes in reference order, moves formatted definitions to the footer, hides unused definitions, and provides forward/return navigation. Repeated references, code, links, nested brackets, empty notes, and folded callouts have regression coverage. Live Preview footnote rendering and superscript reference typography remain incomplete; exhaustive syntax parity is not established."
+      "notes": "Reading numbers named and inline footnotes in reference order, moves formatted definitions to the footer, hides unused definitions, and provides forward/return navigation. Reading and Editing Preview share smaller raised reference glyphs. Editing Preview displays numbered definitions/backlinks at their source positions, reveals complete multiline definitions for editing, hides unused definitions and preserves Unicode mappings/copy/undo. Nested definitions restore enclosing ownership. Representative native Linux footnote checks are recorded on the pre-audit development build. Label-case and truly empty definition handling, exact typography, other native platforms and exhaustive syntax parity remain gaps."
     },
     {
       "id": "tables_alignment_escaping",
@@ -417,7 +427,9 @@
         "rendering::tests",
         "prepared::tests",
         "markdown::tests",
-        "live::tests"
+        "live::tests",
+        "tables::tests",
+        "workspace::tests::tables::huge_table_cells_render_in_bounded_rows_and_keep_complete_selection_and_links"
       ],
       "obsidian_evidence": {
         "mode": "Reading",
@@ -431,7 +443,7 @@
       },
       "markdown": "| Left | Center | Right |\n| :-- | :--: | --: |\n| **bold** | `code` | 123 |\n| a\\|b | [[Target\\|alias]] | 456 |",
       "parity_verified": false,
-      "notes": "Implemented native feature; exhaustive Reading and Live Preview parity is not established."
+      "notes": "Native tables retain alignment, styles and links across bounded cell slices. Full cell text and chunk metadata are shared; source selection/copy preserves complete Markdown. Exhaustive Reading and Live Preview parity is not established."
     },
     {
       "id": "foldable_nested_callouts",
@@ -451,11 +463,12 @@
       "opalglass_evidence": {
         "prepared_rows": "target/markdown-audit/opalglass.json",
         "native_combined_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts.png",
-        "native_expanded_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts-expanded.png"
+        "native_expanded_screenshot": "target/workflow-audit/release-runs/run-3495pi3f/reading-callouts-expanded.png",
+        "pre_audit_native_verification": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json"
       },
       "markdown": "> [!tip] Custom **title**\n> Body text\n>\n> > [!warning]- Nested\n> > Hidden detail\n\n> [!note]+ Open by default\n> Detail",
       "parity_verified": false,
-      "notes": "Reading renders typed callouts, formatted/default titles, nesting and +/- fold states. Collapsing removes body rows from the virtual list; find and outline navigation reveal hidden targets. Source edits invalidate fold overrides. Live Preview callout widgets and exact Obsidian icon/theme parity are not implemented."
+      "notes": "Reading and Editing Preview render typed callouts, formatted/default titles, nesting and +/- fold controls. Collapsing removes body rows from virtual lists; explicit navigation expands hidden ancestors. Editing Preview preserves original Markdown for active editing/copy/undo and keeps physical scroll anchors across Source/Live/Reading transitions. Automated interaction and mixed-format split-scroll tests pass. Representative native Linux input/layout checks pass; exact Obsidian icon/theme parity remains open."
     },
     {
       "id": "inline_block_math",
@@ -547,7 +560,12 @@
       "family": "links_embeds",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "anchors::tests",
+        "workspace::tests::anchors",
+        "prepared::block_markers_tests",
+        "editor::block_markers_tests"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -560,14 +578,23 @@
       },
       "markdown": "[[Target#Section]] [[Target#^sample]]\n\nA block in this note. ^here",
       "parity_verified": false,
-      "notes": "ATX heading navigation works; block references and full heading normalization need work."
+      "notes": "Parser-derived ATX/Setext and formatted headings, normalized/hierarchical fragments, and paragraph/list/structured block IDs resolve in both panes. Tests cover late targets, collapsed callouts, missing-target styles and saved/unsaved target updates. Recognized block-ID markers hide in Reading and inactive Editing Preview while complete raw source remains editable/copyable. Duplicate IDs keep the first navigation target and hide every recognized marker. Full Obsidian rendering parity remains unverified."
     },
     {
       "id": "note_heading_block_transclusion",
       "family": "links_embeds",
-      "status": "missing",
+      "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "embeds::tests",
+        "embeds::occurrences::tests",
+        "workspace::compose_selection::tests",
+        "workspace::reading_projection::tests",
+        "workspace::tests::embedded_documents",
+        "workspace::tests::reading_origins",
+        "workspace::tests::embeds",
+        "workspace::tests::embeds::footnote_navigation"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -576,18 +603,27 @@
       },
       "opalglass_evidence": {
         "prepared_rows": "target/markdown-audit/opalglass.json",
-        "native_combined_screenshot": null
+        "native_combined_screenshot": "target/workflow-audit/release-runs/run-yfmbqshu/embeds-initial-reading.png"
       },
       "markdown": "![[Target]]\n\n![[Target#Section]]\n\n![[Target#^sample]]",
       "parity_verified": false,
-      "notes": "The current native renderer does not implement this feature family."
+      "notes": "Reading and Split render whole-note, heading, block and same-note embeds with shared callout/footnote/image/task/code presentation. Relative actions use the source note. On-demand background loading, source-version refresh, recursion/cycle limits and bounded caches are implemented. Actual widget tests cover nested/repeated instances, source navigation, dirty and saved refresh, virtualization, idle/budget leases and scroll anchors. Editing Preview keeps embed Markdown as editable source; exact Obsidian layout and full Live Preview transclusion parity remain unverified. Recognized block-ID metadata hides while raw source and complete copying remain intact; native source/section/block actions and depth-limit rendering are verified on the recorded pre-audit development build. Subsequent automated regressions cover footnote returns outside the embedded section through asynchronous source opening, changed-source rejection and navigation cancellation."
     },
     {
       "id": "local_remote_images_dimensions",
       "family": "links_embeds",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "images::tests",
+        "workspace::tests::images::requested_image_sizes_preserve_ratio_and_fit_reading_and_split_panes",
+        "images::http::tests",
+        "images::decode::tests",
+        "images::decode::svg::tests",
+        "workspace::tests::remote_images",
+        "workspace::tests::remote_geometry",
+        "workspace::tests::remote_network"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -600,7 +636,7 @@
       },
       "markdown": "![[Pixel.svg|120]]\n\n![Alt|100x60](Pixel.svg)\n\n![Remote|100](REMOTE_IMAGE_URI)",
       "parity_verified": false,
-      "notes": "Local images, including images embedded in paragraphs, render as native image blocks; exact inline flow, requested dimensions and remote loading are not implemented."
+      "notes": "Local and HTTP(S) images render as native blocks with requested dimensions. Remote downloads and decoding run off the UI thread with bounded concurrency/input/decoded cache, loading/errors/retry, cancellation and tested scroll anchors. GIF/WebP use their first frame. SVG processing has stricter resource bounds, rejects filters and does not load nested images. Table-cell widgets and exact inline flow remain incomplete; native visual parity is not established."
     },
     {
       "id": "audio_video_embeds",
@@ -788,7 +824,13 @@
       "family": "layout",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "editor::context_tests",
+        "editor::visibility_tests",
+        "editor::callout_tests",
+        "editor::block_markers_tests",
+        "workspace::tests::live::mixed_editing_preview_keeps_split_scroll_and_mode_transitions_on_source_anchors"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -797,18 +839,23 @@
       },
       "opalglass_evidence": {
         "prepared_rows": "target/markdown-audit/opalglass.json",
-        "native_combined_screenshot": null
+        "native_combined_screenshot": null,
+        "pre_audit_native_verification": "target/workflow-audit/release-runs/run-yfmbqshu/native-verification.json"
       },
       "markdown": "# Start\n\n**Bold** and [[Target|short alias]].\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\nParagraph\n\n# End",
       "parity_verified": false,
-      "notes": "Existing scroll synchronization and Unicode editing tests pass. New transformed inline syntax needs broader caret testing."
+      "notes": "Automated tests cover Unicode caret mappings, complete selection/copy/undo, simulated composition, hidden syntax, nested folds and block markers. Mixed-format workspace tests cover locked split scrolling, mode transitions, folded-target navigation and unlocked independence. Native Unicode input/copy/mode and long-note keyboard-scroll checks passed on the recorded pre-audit development build. Real IME, other native platforms and exhaustive visual parity remain open."
     },
     {
       "id": "large_notes_virtualization",
       "family": "layout",
       "status": "partial",
       "fixture": "inline markdown in this record",
-      "tests": [],
+      "tests": [
+        "prepared::tests",
+        "tables::tests",
+        "workspace::tests::tables::huge_table_cells_render_in_bounded_rows_and_keep_complete_selection_and_links"
+      ],
       "obsidian_evidence": {
         "mode": "Reading",
         "version": "1.14.4",
@@ -821,7 +868,7 @@
       },
       "markdown": "# Long note\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\nA paragraph with **bold** text.\n\n",
       "parity_verified": false,
-      "notes": "Opening uses an 8 KiB prefix and long prose/code use 1 KiB display chunks. Very large individual table cells are not yet subdivided."
+      "notes": "Opening uses an 8 KiB prefix. Long prose/code and table cells use roughly 1 KiB display chunks; exceptional table-cell graphemes are capped at 4 KiB per slice at UTF-8 boundaries. Shared full cells preserve links and complete source copy. Native release performance remeasurement remains a separate release gate."
     }
   ],
   "status_meanings": {

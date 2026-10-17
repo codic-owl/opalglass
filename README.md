@@ -88,7 +88,9 @@ Your distribution's Vulkan driver package is also needed at runtime. If a stale
   page navigation with selection. Vertical movement remembers the text column.
 - A centered reading column with clearer heading, quote, and link styling;
   complete code-block copying and an empty-note writing action.
-- Wiki links, aliases, heading navigation, backlinks, and tag filtering.
+- Wiki links, aliases, heading/block navigation, Markdown/wiki backlinks, and tag filtering.
+- Automatic HTTP(S), `www` and email links in Reading and Editing Preview;
+  Ctrl/Cmd-click follows them in either editor mode. Code stays literal.
   Unresolved wiki links use coral text and a wavy underline in source and preview;
   the styling updates when target notes are created, moved, or removed.
 - Ranked Tantivy search over saved note titles, paths and contents, with typo
@@ -143,6 +145,17 @@ contents separately when the original file conflicts.
   Formatting shortcuts and commands preserve Markdown and undo history.
 - **Outline:** the outline icon or Ctrl Shift O opens clickable headings. Selecting
   a heading jumps both the editor and reading pane to that section.
+  Links also support formatted and Setext headings, nested sections such as
+  `[[Note#Parent#Child]]`, and block IDs such as `[[Note#^paragraph-id]]` or
+  `[[#^paragraph-id]]`. Targets load beyond the opening preview and reveal folded
+  callouts. Missing headings and blocks use the unresolved-link style.
+  Recognized `^block-id` markers hide in Reading and inactive Editing Preview;
+  editing, selection and copying retain the original Markdown. Duplicate IDs
+  keep the first navigation target while hiding every recognized marker.
+- **Note embeds:** Reading and Split display `![[Note]]`,
+  `![[Note#Heading]]` and `![[Note#^block-id]]`. Links and images resolve from
+  the embedded note; its header opens the original. Nested embeds detect cycles
+  and load only when they approach the viewport.
 - **Resume work:** per-vault tabs, their order, the active note, selections, and
   editor/reading scroll positions are restored. Missing files are skipped unless
   unsaved recovery data exists. Alt Left/Right, toolbar arrows, and mouse side
@@ -172,8 +185,14 @@ contents separately when the original file conflicts.
 - **Attachments:** paste a clipboard image with Ctrl V, or drop images/PDFs onto
   a note. Files are copied into the vault's `Attachments/` folder with unique
   names, and relative Markdown links are inserted at the caret. Reading displays
-  local images, including images within paragraphs, as native image blocks;
-  clicking an attachment opens the system viewer. Undo removes
+  local and HTTP(S) images, including images within paragraphs, as native image
+  blocks.
+  Request a width with `![[Photo.png|300]]` or `![caption|300](Photo.png)`,
+  or width × height with `![[Photo.png|300x200]]`. Width-only keeps the
+  intrinsic proportions; requested sizes shrink proportionally in narrow panes.
+  Remote images load in the background and show errors with a Retry button;
+  clicking one opens its URL in the browser. Clicking a local attachment opens
+  the system viewer. Undo removes
   the inserted link but keeps the imported file. Attachments appear in the explorer
   and support rename, drag-and-drop moves, and trash. Moving notes, folders, or
   attachments preserves resolved wiki links, Markdown links, image links, and
@@ -183,8 +202,11 @@ contents separately when the original file conflicts.
   is one undoable editor change. Versions are captured before overwrites, including
   autosaves and link rewrites. They live in `.opalglass-history/` inside the vault
   and are excluded from discovery/search. Up to 100 unique versions and 64 MiB
-  are retained per note; one oversized version is retained. Storage is keyed by
-  path: histories from before a rename remain under the old path's history key.
+  are retained per note; one oversized version is retained. Saved versions follow
+  note and folder renames through durable identity routing. Reusing an old
+  filename starts a separate history; interrupted moves retain recovery metadata.
+  Overlapping captures keep their selected identity for duplicate detection and
+  retention pruning, including when another app renames and reuses the old path.
   Bulk recovery records are retained separately and are not pruned automatically.
 - **External changes:** clean notes refresh automatically. For an edited note,
   **Compare versions** shows your text against disk, with an alternate view of
@@ -563,9 +585,38 @@ are numbered in reference order, with formatted definitions at the bottom and
 links back to each reference. Named and inline footnotes are supported, including
 repeated references and folded callouts inside definitions. Comments are removed
 with a sparse source-offset map, so hidden
-text cannot accidentally become an indented code block. Paragraphs and code are
-still divided into bounded display chunks; large individual table cells need
-additional subdivision.
+text cannot accidentally become an indented code block. Paragraphs, code and
+large table cells are divided into virtualized display chunks. Table chunks share
+the complete cell text and styles, preserving links and full source copying.
+Ordinary cell chunks contain about 1 KiB; an exceptional grapheme exceeding
+4 KiB is split at a UTF-8 boundary for Reading without changing source text.
+
+Editing Preview shares numbered footnotes, smaller raised reference glyphs and
+formatted definitions with backlinks. Typed callouts have colored borders,
+titles and independent nested fold controls. Navigating into a folded body
+opens its ancestors. Completely hidden comment, reference-definition and unused
+footnote lines leave the virtual row list; real blank lines remain. Editing
+reveals the original syntax, while selection, copy and undo retain full Markdown.
+
+Remote images use the existing pinned `reqwest`, `image` and `resvg/usvg`
+packages with a separate bounded loader. At most two fetch/decode jobs run at
+once. Downloads stop at 16 MiB, dimensions at 8192 pixels per side, and decoded
+output at 32 MiB per image. The decoded CPU cache holds at most 32 MiB across
+64 entries; only visible images can pin entries, and obsolete requests are
+cancelled. These are image-cache limits, not a ceiling on total app/GPU memory;
+native GPU reclamation remains part of platform release verification.
+
+GIF/WebP use their first frame. SVGs have a 512 KiB input limit plus bounds on
+structure and rendering surfaces. They support ordinary vectors, text, gradients,
+internal references, clipping, masks and patterns; filters and SVGZ are rejected,
+and nested image resources are not loaded. Raster decoder allocation limits are
+best effort within the bounded input, dimensions, output and job count.
+A standalone check uses the same pipeline:
+`cargo run --example remote_image_probe -- 'https://example.com/image.png'`.
+Explicit width × height frames stay stable during loading. Width-only frames
+adopt the decoded intrinsic ratio; the Reading list preserves its logical scroll
+anchor when an image above the viewport finishes. Images without requested sizes
+keep a 320-pixel frame. No network or decoding work runs on the UI thread.
 
 Fenced code uses Syntect's bundled grammars for syntax colors in Reading, Source
 and Live Preview. Opening and full document layout run before background coloring;
@@ -579,15 +630,35 @@ The bundled grammars and theme are not identical to Obsidian's Prism setup.
 
 The 35-family Obsidian inventory explicitly distinguishes implemented, partial,
 and missing features. **It does not establish 1:1 coverage.** Known gaps include
-unusual highlight delimiter runs, exhaustive code-language coverage, footnote superscripts and Live
-Preview footnotes, math, Mermaid,
-HTML rendering, block references/transclusion, media/PDF/canvas/search embeds,
-remote image loading and exact image dimensions. Live Preview also needs full
-block-level parity, including callout widgets. Standard HTTP(S) and mail links open in the system browser;
+unusual highlight delimiter runs, exhaustive code-language coverage, footnote
+label-case and empty-definition handling, math, Mermaid,
+HTML rendering, media/PDF/canvas/search embeds,
+exact inline image flow and table-cell image widgets. Exhaustive Live Preview
+block-level parity remains open. Recorded native Linux layout, input and
+navigation checks passed in an isolated KWin desktop before the latest audit
+fixes; the original binary hash and current automated checks are recorded in
+`tests/fixtures/v1-verification.json`. Shared document
+context resolves reference-style links, multiline comments and named/inline footnote
+reference numbers in Editing Preview while preserving source text and edit positions. Standard HTTP(S) and mail links open in the system browser;
 wiki links open local notes. Ambiguous bare titles need an explicit path.
 
+Reading note embeds share the normal renderer, including callouts, footnotes,
+tasks, code copying and images. Section embeds include their referenced footnote
+definitions. Saved changes and open unsaved source buffers invalidate embedded
+content. Footnote returns outside the embedded section wait for the source note
+to open and finish preparation; changed sources and newer navigation reject stale
+destinations. Loading and preparation run in the background, with two workers,
+16 pending requests, 64 cached documents and a 64 MiB estimated cache budget.
+Individual embedded source files are limited to 8 MiB; larger notes remain
+available through Open note. Visible nested content retains its source and
+ancestors. Recursion stops at cycles, eight levels or 64 expanded instances;
+recent offscreen instances can yield their place to later occurrences. Fold
+and footer mappings use compact intervals rather than one index per row.
+These limits bound embed preparation and caching, not total application memory.
+Editing Preview continues to expose embed Markdown as editable source.
+
 The read-only real-vault audit passed all 4,425 notes (370,107,531 source bytes),
-1,268,134 prepared display rows, and 13,386 parsed references. It checks source
+1,268,132 prepared display rows, and 13,386 parsed references. It checks source
 bounds/UTF-8 boundaries, display spans, nonoverlapping source rows, folded/footer
 projection mappings and footnote return positions, not visual equivalence. This caught and
 fixed an empty-wiki-link range panic missed by small fixtures. To repeat it:
