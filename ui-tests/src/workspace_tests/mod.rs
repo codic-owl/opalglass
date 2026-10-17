@@ -8,6 +8,7 @@ mod anchors;
 mod embedded_documents;
 mod embeds;
 mod explorer;
+mod history;
 mod images;
 mod live;
 mod navigation;

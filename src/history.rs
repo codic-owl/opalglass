@@ -10,6 +10,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod identity;
+pub(crate) use identity::move_entry;
+
 pub(crate) fn hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
@@ -80,7 +83,11 @@ impl Version {
     }
 }
 pub fn versions(root: &Path, path: &Path) -> io::Result<Vec<Version>> {
-    let directory = match directory(root, &["notes", &note_key(path)], false) {
+    let location = identity::location(root, path)?;
+    versions_at(root, &location)
+}
+fn versions_at(root: &Path, location: &identity::Location) -> io::Result<Vec<Version>> {
+    let directory = match directory(root, &["notes", &location.key], false) {
         Ok(path) => path,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err(e),
@@ -117,21 +124,31 @@ pub fn read(root: &Path, path: &Path, id: &str) -> io::Result<String> {
     if !valid_id(id) {
         return Err(invalid("Invalid history version"));
     }
-    let file = directory(root, &["notes", &note_key(path)], false)?.join(format!("{id}.json"));
+    let location = identity::location(root, path)?;
+    read_at(root, &location, id)
+}
+fn read_at(root: &Path, location: &identity::Location, id: &str) -> io::Result<String> {
+    let file = directory(root, &["notes", &location.key], false)?.join(format!("{id}.json"));
     regular(&file)?;
     let record: Snapshot = serde_json::from_slice(&fs::read(file)?)?;
-    if record.path != path || hash(&record.text) != id {
+    if note_key(&record.path) != note_key(&location.origin) || hash(&record.text) != id {
         return Err(invalid("History record does not match this note"));
     }
     Ok(record.text)
 }
 pub(crate) fn capture(root: &Path, path: &Path, text: &str) -> io::Result<()> {
-    let folder = directory(root, &["notes", &note_key(path)], true)?;
+    let location = identity::location(root, path)?;
+    capture_at(root, &location, text)
+}
+fn capture_at(root: &Path, location: &identity::Location, text: &str) -> io::Result<()> {
+    // Another app may move this path and reuse its name during capture. Read and
+    // prune the selected identity throughout, even after its route changes.
+    let folder = directory(root, &["notes", &location.key], true)?;
     let id = hash(text);
     let record = folder.join(format!("{id}.json"));
     match fs::symlink_metadata(&record) {
         Ok(_) => {
-            read(root, path, &id)?;
+            read_at(root, location, &id)?;
             return Ok(());
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
@@ -140,7 +157,7 @@ pub(crate) fn capture(root: &Path, path: &Path, text: &str) -> io::Result<()> {
     publish(
         &record,
         &Snapshot {
-            path: path.into(),
+            path: location.origin.clone(),
             text: text.into(),
         },
     )?;
@@ -148,7 +165,10 @@ pub(crate) fn capture(root: &Path, path: &Path, text: &str) -> io::Result<()> {
     // per note (one oversized version is retained instead of silently lost).
     let mut bytes = record.metadata()?.len();
     let mut count = 1;
-    for version in versions(root, path)?.into_iter().filter(|v| v.id != id) {
+    for version in versions_at(root, location)?
+        .into_iter()
+        .filter(|v| v.id != id)
+    {
         bytes = bytes.saturating_add(version.bytes);
         count += 1;
         if count > 100 || bytes > 64 * 1024 * 1024 {

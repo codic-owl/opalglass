@@ -151,7 +151,17 @@ impl Vault {
             }
             // Atomic NOREPLACE prevents a racing writer's destination from
             // being overwritten, including an empty directory on Linux.
-            crate::platform::rename_new(source, destination)?;
+            let from = source.strip_prefix(&self.root).map_err(io::Error::other)?;
+            let to = destination
+                .strip_prefix(&self.root)
+                .map_err(io::Error::other)?;
+            let moved_notes = self
+                .notes
+                .iter()
+                .filter(|note| note.path.starts_with(from))
+                .map(|note| note.path.clone())
+                .collect::<Vec<_>>();
+            crate::history::move_entry(&self.root, from, to, &moved_notes)?;
             Ok(())
         })();
         if let Err(error) = result {
