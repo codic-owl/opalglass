@@ -51,6 +51,15 @@ impl Render for PreviewPane {
                             // Apply once: the list may clamp near EOF, and retrying that
                             // clamped position every frame would cause a redraw loop.
                             window.defer(cx, move |_, cx| {
+                                // Navigation or a newer source anchor can update
+                                // this shared list after paint queued the fix.
+                                // An old correction must not restore its item.
+                                let latest = scroll.logical_scroll_top();
+                                if latest.item_ix != current.item_ix
+                                    || latest.offset_in_item != current.offset_in_item
+                                {
+                                    return;
+                                }
                                 scroll.scroll_to(ListOffset {
                                     item_ix: index,
                                     offset_in_item: offset,
@@ -62,6 +71,9 @@ impl Render for PreviewPane {
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if phase.capture() && hitbox.should_handle_scroll(window) {
                             let _ = owner.update(cx, |workspace, cx| {
+                                if let Some(tab) = workspace.tabs.get_mut(workspace.active) {
+                                    tab.pending_anchor = None;
+                                }
                                 if workspace.scroll_locked
                                     && workspace.mode == ViewMode::Split
                                     && let Some(tab) = workspace.tabs.get(workspace.active)

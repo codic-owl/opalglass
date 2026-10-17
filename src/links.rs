@@ -12,6 +12,8 @@ pub struct Reference {
     pub target: String,
     pub destination: Range<usize>,
     pub wiki: bool,
+    /// Definitions are retained for move rewrites even when no link uses them.
+    pub used: bool,
 }
 
 pub fn options() -> Options {
@@ -29,10 +31,27 @@ fn hidden_ranges(source: &str) -> Vec<Range<usize>> {
     if let Ok(Some(header)) = crate::properties::frontmatter(source) {
         hidden.push(header.range);
     }
+    // Metadata is not Markdown. Parsing an unclosed HTML comment from a YAML
+    // literal could otherwise consume the note body beyond the closing fence.
+    let body_start = hidden.first().map_or(0, |r| r.end);
+    let body = &source[body_start..];
     let bytes = source.as_bytes();
-    if source.contains("%%") {
+    if body.contains("<!--") {
+        for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
+            if matches!(event, Event::Html(_) | Event::InlineHtml(_))
+                && body[range.clone()].starts_with("<!--")
+            {
+                let start = body_start + range.start;
+                let end = source[start + 4..]
+                    .find("-->")
+                    .map_or(source.len(), |n| start + 4 + n + 3);
+                hidden.push(start..end);
+            }
+        }
+    }
+    if body.contains("%%") {
         let mut protected = Vec::new();
-        for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
+        for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
             if matches!(
                 event,
                 Event::Code(_)
@@ -40,7 +59,7 @@ fn hidden_ranges(source: &str) -> Vec<Range<usize>> {
                     | Event::Html(_)
                     | Event::InlineHtml(_)
             ) {
-                protected.push(range);
+                protected.push(body_start + range.start..body_start + range.end);
             }
         }
         protected.extend(hidden.iter().cloned());
@@ -66,8 +85,22 @@ fn hidden_ranges(source: &str) -> Vec<Range<usize>> {
             }
         }
     }
+    merge_ranges(hidden)
+}
+
+fn merge_ranges(mut hidden: Vec<Range<usize>>) -> Vec<Range<usize>> {
     hidden.sort_by_key(|r| r.start);
-    hidden
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in hidden {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 pub fn masked_source(source: &str) -> std::borrow::Cow<'_, str> {
@@ -97,13 +130,33 @@ pub(crate) struct VisibleSource<'a> {
     skips: Vec<(usize, usize)>,
 }
 impl VisibleSource<'_> {
+    pub(crate) fn hidden_ranges(&self) -> Vec<Range<usize>> {
+        let mut previous = 0;
+        self.skips
+            .iter()
+            .map(|&(at, skipped)| {
+                let range = at + previous..at + skipped;
+                previous = skipped;
+                range
+            })
+            .collect()
+    }
     pub fn original_offset(&self, offset: usize) -> usize {
         let index = self.skips.partition_point(|(at, _)| *at <= offset);
         offset + index.checked_sub(1).map_or(0, |i| self.skips[i].1)
     }
 }
 pub(crate) fn visible_source(source: &str) -> VisibleSource<'_> {
-    let hidden = hidden_ranges(source);
+    visible_source_with(source, std::iter::empty())
+}
+
+/// Additional parser-recognized syntax uses the same sparse source map as
+/// comments. Callers supply complete UTF-8 ranges from document analysis.
+pub(crate) fn visible_source_with(
+    source: &str,
+    extra: impl IntoIterator<Item = Range<usize>>,
+) -> VisibleSource<'_> {
+    let hidden = merge_ranges(hidden_ranges(source).into_iter().chain(extra).collect());
     if hidden.is_empty() {
         return VisibleSource {
             text: source.into(),
@@ -189,141 +242,8 @@ fn label_end(raw: &str) -> Option<usize> {
     None
 }
 
-pub struct Analysis {
-    pub references: Vec<Reference>,
-    pub wiki_links: Vec<crate::markdown::WikiLink>,
-    pub tags: Vec<String>,
-}
-pub fn references(source: &str) -> Vec<Reference> {
-    analyze(source).references
-}
-
-/// Extract saved-note metadata in one parser pass, without retaining the body.
-pub fn analyze(source: &str) -> Analysis {
-    let visible = visible_source(source);
-    let parser = Parser::new_ext(&visible.text, options());
-    let mut references = Vec::new();
-    let mut wiki_links = Vec::new();
-    let mut tags = std::collections::BTreeSet::new();
-    let (mut code_depth, mut link_depth): (usize, usize) = (0, 0);
-    let mut previous = None;
-    let base = visible.text.as_ptr() as usize;
-    for (_, def) in parser.reference_definitions().iter() {
-        let span = visible.original_offset(def.span.start)..visible.original_offset(def.span.end);
-        let raw = &source[span.clone()];
-        if let Some(end) = label_end(raw)
-            && raw.as_bytes().get(end) == Some(&b':')
-            && let Some(range) = destination(raw, end + 1)
-        {
-            references.push(Reference {
-                target: def.dest.to_string(),
-                destination: span.start + range.start..span.start + range.end,
-                wiki: false,
-            });
-        }
-    }
-    for (event, range) in parser.into_offset_iter() {
-        match &event {
-            Event::Start(Tag::CodeBlock(_)) => code_depth += 1,
-            Event::End(TagEnd::CodeBlock) => code_depth = code_depth.saturating_sub(1),
-            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => link_depth += 1,
-            Event::End(TagEnd::Link | TagEnd::Image) => link_depth = link_depth.saturating_sub(1),
-            Event::Start(Tag::Paragraph | Tag::Heading { .. } | Tag::Item | Tag::TableCell)
-            | Event::SoftBreak
-            | Event::HardBreak => previous = Some('\n'),
-            Event::Text(text) => {
-                let pointer = text.as_ptr() as usize;
-                if code_depth == 0
-                    && link_depth == 0
-                    && pointer >= base
-                    && pointer + text.len() <= base + visible.text.len()
-                {
-                    for tag in crate::markdown::text_tags(text, previous) {
-                        tags.insert(text[tag.start + 1..tag.end].to_owned());
-                    }
-                }
-                previous = text.chars().next_back().or(previous);
-            }
-            Event::Code(text) => previous = text.chars().next_back().or(previous),
-            _ => (),
-        }
-        let Event::Start(
-            Tag::Link {
-                link_type,
-                dest_url,
-                ..
-            }
-            | Tag::Image {
-                link_type,
-                dest_url,
-                ..
-            },
-        ) = event
-        else {
-            continue;
-        };
-        if matches!(link_type, LinkType::WikiLink { .. }) {
-            let raw = &visible.text[range.clone()];
-            if let Some(start) = raw.find("[[")
-                && let Some(inner) = raw[start + 2..].strip_suffix("]]")
-            {
-                let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
-                let target = target.trim_end_matches('\\').trim();
-                if !target.is_empty() {
-                    wiki_links.push(crate::markdown::WikiLink {
-                        target: target.into(),
-                        label: label.trim().into(),
-                        range: visible.original_offset(range.start + start)
-                            ..visible.original_offset(range.end),
-                    });
-                }
-            }
-        }
-        let range = visible.original_offset(range.start)..visible.original_offset(range.end);
-        let raw = &source[range.clone()];
-        let wiki = matches!(link_type, LinkType::WikiLink { .. });
-        let relative = if wiki {
-            let start = raw.find("[[").map(|i| i + 2);
-            start.and_then(|start| {
-                let end = raw[start..].find('|').or_else(|| raw[start..].find("]]"))? + start;
-                let target = raw[start..end]
-                    .strip_suffix('\\')
-                    .unwrap_or(&raw[start..end]);
-                if target.trim().is_empty() {
-                    return None;
-                }
-                let end = start + target.len();
-                let leading = target.len() - target.trim_start().len();
-                Some(start + leading..end - (target.len() - target.trim_end().len()))
-            })
-        } else if link_type == LinkType::Inline {
-            label_end(raw)
-                .filter(|&i| raw.as_bytes().get(i) == Some(&b'('))
-                .and_then(|i| destination(raw, i + 1))
-        } else {
-            None
-        };
-        if let Some(relative) = relative {
-            references.push(Reference {
-                target: if wiki {
-                    raw[relative.clone()].trim().to_owned()
-                } else {
-                    dest_url.to_string()
-                },
-                destination: range.start + relative.start..range.start + relative.end,
-                wiki,
-            });
-        }
-    }
-    references.sort_by_key(|r| r.destination.start);
-    references.dedup_by(|a, b| a.destination == b.destination);
-    tags.extend(crate::properties::tags(source));
-    Analysis {
-        references,
-        wiki_links,
-        tags: tags.into_iter().collect(),
-    }
-}
+mod analysis;
+pub use analysis::{Analysis, analyze, references};
 
 pub fn decode_url(path: &str) -> Option<String> {
     let mut decoded = Vec::with_capacity(path.len());
@@ -472,73 +392,4 @@ pub fn retarget(from: &Path, to: &Path, original: &str, wiki: bool) -> Option<St
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn single_pass_tags_match_reading_and_exclude_links_comments_and_code() {
-        let source = "---\ntags: [yaml]\n---\n**#bold** #plain `#code` [#label](Target.md) ![#alt](Image.png)\n\n| First | #cell |\n| --- | --- |\n| Text | #next |\n\n    #indented\n\n%%#hidden%%";
-        let analysis = analyze(source);
-        assert_eq!(analysis.tags, ["bold", "cell", "next", "plain", "yaml"]);
-        assert_eq!(analysis.tags, crate::prepared::Prepared::new(source).tags);
-        assert_eq!(analysis.references.len(), 2);
-    }
-    #[test]
-    fn empty_and_incomplete_wiki_links_never_create_invalid_ranges() {
-        for source in [
-            "[[ ]]",
-            "[[\t|alias]]",
-            "[[　]]",
-            "[[|alias]]",
-            "![[ ]]",
-            "[[",
-            "[[Target",
-            "%%hidden%%[[ ]] [[Real]]",
-        ] {
-            for reference in references(source) {
-                assert!(!reference.target.is_empty());
-                assert!(source.get(reference.destination).is_some());
-            }
-        }
-    }
-    #[test]
-    fn references_preserve_exact_destination_ranges_and_ignore_literal_text() {
-        let source = "---\nlink: '[[YAML]]'\n---\n[[Target#Heading|Alias]] ![[Picture.png|120]]\n[**label**](../A%20note.md#Part \"title\")\n![alt](<images/a (b).png>)\n[ref][r]\n\n[r]: <../Folder/File.md> 'a title'\n\n`[[code]]` `%%` [[Visible]]\n%% [[hidden]] [hidden](Hide.md) %%\n```\n[[fenced]]\n```\n";
-        let refs = references(source);
-        assert_eq!(
-            refs.iter()
-                .map(|r| &source[r.destination.clone()])
-                .collect::<Vec<_>>(),
-            [
-                "Target#Heading",
-                "Picture.png",
-                "../A%20note.md#Part",
-                "images/a (b).png",
-                "../Folder/File.md",
-                "Visible"
-            ]
-        );
-    }
-    #[test]
-    fn relative_urls_handle_unicode_reserved_characters_and_parent_segments() {
-        let files =
-            Resolver::new(["A/One.md", "Images/é (x)#1.png", "A/Target.md"].map(PathBuf::from));
-        let from = Path::new("A/One.md");
-        let target = Path::new("Images/é (x)#1.png");
-        let url = relative_url(from, target);
-        assert_eq!(url, "../Images/%C3%A9%20%28x%29%231.png");
-        assert_eq!(files.resolve(from, &url, false).as_deref(), Some(target));
-        assert_eq!(
-            files.resolve(from, "Target#Part", true),
-            Some("A/Target.md".into())
-        );
-        assert_eq!(files.resolve(from, "../../../outside.png", false), None);
-        assert_eq!(
-            files.resolve(from, "https://example.com/file.md", false),
-            None
-        );
-        assert_eq!(
-            retarget(from, Path::new("Else/Target.md"), "Target#Part", true).unwrap(),
-            "/Else/Target#Part"
-        );
-    }
-}
+mod tests;

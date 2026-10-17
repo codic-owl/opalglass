@@ -39,5 +39,9 @@ fn positive_pixels(text: &str) -> Option<u32> {
     text.parse::<u32>().ok().filter(|value| *value > 0)
 }
 
+#[cfg(test)]
+#[path = "images/tests.rs"]
+mod tests;
+
 mod loading;
 pub use loading::{load, prepare};

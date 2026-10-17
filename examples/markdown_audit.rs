@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "text": row.text.as_ref(), "indent": row.indent, "quotes": row.quotes,
             "language": row.language.as_deref(), "task": row.task.as_ref().map(|r| [r.start, r.end]),
             "spans": row.spans.iter().map(|s| json!({"range": [s.range.start, s.range.end], "style": format!("{:?}", s.style)})).collect::<Vec<_>>(),
-            "table": row.table.as_ref().map(|t| json!({"header": t.header, "cells": t.cells.iter().map(|c| json!({"text": c.text.as_ref(), "alignment": format!("{:?}", c.alignment), "spans": format!("{:?}", c.spans)})).collect::<Vec<_>>()})),
+            "table": row.table.as_ref().map(|t| json!({"header": t.row.header, "continuation": !t.first, "cells": t.row.cells.iter().enumerate().map(|(column, c)| json!({"text": t.text(column), "alignment": format!("{:?}", c.alignment), "spans": format!("{:?}", t.spans(column))})).collect::<Vec<_>>()})),
         })).collect();
         let mut projection = opalglass::callouts::Projection::default();
         projection.rebuild(document.rows.len(), &document.callouts);

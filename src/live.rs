@@ -5,6 +5,7 @@ use std::ops::Range;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Text,
+    CalloutTitle,
     Heading(u8),
     Quote,
     Code,
@@ -33,6 +34,17 @@ impl Line {
         }
     }
     pub fn new(source: &str, reveal: bool, code: bool, continuation: bool) -> Self {
+        Self::parsed(source, reveal, code, continuation, |text, _| {
+            markdown::inline_mapped(text)
+        })
+    }
+    fn parsed(
+        source: &str,
+        reveal: bool,
+        code: bool,
+        continuation: bool,
+        parse: impl FnOnce(&str, usize) -> (String, Vec<Span>, Vec<usize>),
+    ) -> Self {
         let mut line = Self::raw(source);
         let trimmed = source.trim_start();
         let indent = source.len() - trimmed.len();
@@ -78,7 +90,7 @@ impl Line {
         if reveal {
             return line;
         }
-        let (text, spans, mapping) = markdown::inline_mapped(&source[skip..]);
+        let (text, spans, mapping) = parse(&source[skip..], skip);
         line.text = format!("{prefix}{text}");
         line.spans = spans
             .into_iter()
@@ -138,6 +150,10 @@ impl Line {
         }
     }
 }
+
+mod context;
+pub use context::{Context, LiveCallout};
+pub mod rows;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,10 @@
 // Opening notes and restoring navigation history.
 use super::*;
 
+#[path = "navigation/destination.rs"]
+mod destination;
+use destination::Destination;
+
 impl Workspace {
     pub(super) fn current_location(&self, cx: &App) -> Option<navigation::SessionTab> {
         let tab = self.tabs.get(self.active)?;
@@ -110,6 +114,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_note_to(path, heading.map(Destination::Fragment), window, cx);
+    }
+    fn open_note_to(
+        &mut self,
+        path: PathBuf,
+        destination: Option<Destination>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(vault) = &self.vault
             && vault.files.contains(&path)
         {
@@ -136,12 +149,12 @@ impl Workspace {
         self._note_load = None;
         self.note_loading = false;
         if let Some(index) = self.tabs.iter().position(|t| t.path == path) {
-            if heading.is_none() {
+            if destination.is_none() {
                 self.activate_tab(index, window, cx);
             } else {
                 self.remember_departure(cx);
                 self.active = index;
-                self.finish_note_navigation(heading, window, cx);
+                self.finish_note_navigation(destination, window, cx);
                 self.log_performance("Follow heading", path.display().to_string(), started, cx);
             }
             return;
@@ -206,7 +219,7 @@ impl Workspace {
                         if this.tabs[this.active].dirty(cx) {
                             this.message("Recovered unsaved edits. External changes will be checked before saving.", false, cx);
                         } else { this.message("Note opened", false, cx); }
-                        this.finish_note_navigation(heading, window, cx);
+                        this.finish_note_navigation(destination, window, cx);
                     }
                     Err(error) => this.message(format!("Could not open note: {error}"), true, cx),
                 }
@@ -340,13 +353,16 @@ impl Workspace {
                 ListAlignment::Top,
                 px(100.),
             ),
+            composition: reading_composition::State::new(
+                preview_projection.len(prepared.rows.len()),
+            ),
             preview_projection,
             connections_cache: None,
             connections_scroll: UniformListScrollHandle::new(),
             prepared,
             prepared_revision: revision,
             initial_frame_pending: true,
-            pending_heading: None,
+            pending_anchor: None,
             pending_preview: None,
             link_style_revision: (u64::MAX, u64::MAX),
             requested_revision: if complete { revision } else { u64::MAX },
@@ -360,44 +376,5 @@ impl Workspace {
             _link_subscription: link_subscription,
             _attachment_subscription: attachment_subscription,
         });
-    }
-    pub(super) fn finish_note_navigation(
-        &mut self,
-        heading: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(tab) = self.tabs.get_mut(self.active) {
-            tab.pending_heading = None;
-        }
-        if let Some(heading) = heading
-            && let Some(tab) = self.tabs.get_mut(self.active)
-        {
-            if !tab.prepared.complete {
-                tab.pending_heading = Some(heading.clone());
-            }
-            if let Some((_, index)) = tab
-                .prepared
-                .headings
-                .iter()
-                .find(|(title, _)| markdown::heading_matches(title, &heading))
-            {
-                tab.reveal_preview_row(*index);
-                self.preview_pane.update(cx, |_, cx| cx.notify());
-            }
-            if let Some(offset) =
-                markdown::heading_offset(tab.editor.read(cx).buffer.text(), &heading)
-            {
-                tab.editor
-                    .update(cx, |editor, cx| editor.jump_to(offset, cx));
-            }
-        }
-        self.modal = Modal::None;
-        self.inline_parent = None;
-        self.explorer_menu = None;
-        self.sort_menu = None;
-        self.apply_history_position(cx);
-        self.focus_document(window, cx);
-        cx.notify();
     }
 }

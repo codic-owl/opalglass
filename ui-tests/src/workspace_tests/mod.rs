@@ -4,12 +4,22 @@ use super::{
 };
 use gpui::TestAppContext;
 
+mod anchors;
+mod embedded_documents;
+mod embeds;
 mod explorer;
+mod images;
+mod live;
 mod navigation;
 mod performance;
+mod reading_origins;
+mod remote_geometry;
+mod remote_images;
+mod remote_network;
 mod rendering;
 mod saving;
 mod search;
+mod tables;
 mod virtualization;
 mod workflows;
 

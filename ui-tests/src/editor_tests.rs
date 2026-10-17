@@ -2,6 +2,53 @@ use super::{Editor, LINE};
 use gpui::{EntityInputHandler, Modifiers, TestAppContext, point, px};
 
 #[gpui::test]
+fn bare_url_and_email_clicks_preserve_source_in_both_editor_modes(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    let text = "Lead\n\né HTTP://example.com/é\n\nWrite test@example.com.\n\n`https://example.com/code`\n\nEnd\n";
+    let (view, cx) = cx.add_window_view(|w, cx| {
+        let editor = Editor::new(text, false, "", cx);
+        editor.focus.focus(w);
+        editor
+    });
+    let targets = Rc::new(RefCell::new(Vec::new()));
+    let observed = targets.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&view, move |_, event: &super::FollowLink, _| {
+            observed.borrow_mut().push(event.0.clone())
+        })
+    });
+    for live in [false, true] {
+        view.update(cx, |e, cx| {
+            e.set_live_preview(live, cx);
+            e.jump_to(text.len(), cx);
+        });
+        cx.run_until_parked();
+        for needle in ["HTTP://", "test@", "https://"] {
+            let position = view.read_with(cx, |e, _| {
+                e.point_for(text.find(needle).unwrap() + 2) + point(px(0.), px(LINE / 2.))
+            });
+            cx.simulate_click(
+                position,
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    assert_eq!(
+        *targets.borrow(),
+        vec![
+            "HTTP://example.com/é",
+            "mailto:test@example.com",
+            "HTTP://example.com/é",
+            "mailto:test@example.com",
+        ]
+    );
+    view.read_with(cx, |e, _| assert_eq!(e.buffer.text(), text));
+}
+
+#[gpui::test]
 fn control_click_follows_tags_in_source_and_live_preview_but_not_yaml_or_code(
     cx: &mut TestAppContext,
 ) {

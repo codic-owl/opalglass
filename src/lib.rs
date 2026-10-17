@@ -1,3 +1,4 @@
+pub mod anchors;
 pub mod attachments;
 pub mod buffer;
 pub mod callouts;
@@ -6,6 +7,7 @@ pub mod commands;
 pub mod comparison;
 pub mod document;
 pub mod editing;
+pub mod embeds;
 pub mod footnotes;
 pub mod history;
 pub mod images;
@@ -21,6 +23,7 @@ pub mod properties;
 pub mod rendering;
 pub mod state;
 pub mod syntax;
+pub mod tables;
 pub mod vault;
 
 pub use opalglass_search as search;

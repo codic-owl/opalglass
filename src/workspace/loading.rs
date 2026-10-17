@@ -52,6 +52,8 @@ impl Workspace {
             return;
         }
         self.cancel_indexing();
+        self.embedded_documents
+            .update(cx, |cache, cx| cache.clear(cx));
         self.load_cancelled.store(true, Ordering::Relaxed);
         self.load_cancelled = Arc::new(AtomicBool::new(false));
         let cancelled = self.load_cancelled.clone();

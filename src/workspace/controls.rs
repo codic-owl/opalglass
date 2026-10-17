@@ -1,6 +1,14 @@
 // Shared buttons, vector icons and labels.
 use super::*;
 
+pub(super) fn external_link(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(scheme, _)| {
+        ["https", "http", "mailto"]
+            .iter()
+            .any(|value| scheme.eq_ignore_ascii_case(value))
+    })
+}
+
 pub(super) fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     div()
         .id(id)

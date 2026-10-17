@@ -38,6 +38,9 @@ pub struct InlineStyle {
     pub strike: bool,
     pub target: Option<String>,
     pub image: bool,
+    /// Parser-local source identity keeps adjacent image labels separate.
+    pub image_start: usize,
+    pub image_dimensions: Option<crate::images::Dimensions>,
     pub highlight: Option<HighlightColor>,
     pub syntax_color: Option<u32>,
 }
@@ -218,43 +221,12 @@ pub(crate) fn text_tags(text: &str, previous: Option<char>) -> Vec<Range<usize>>
     ranges
 }
 
-pub fn heading_matches(title: &str, anchor: &str) -> bool {
-    title.to_lowercase() == anchor.to_lowercase()
-        || title
-            .chars()
-            .filter_map(|c| {
-                if c.is_whitespace() {
-                    Some('-')
-                } else if c.is_alphanumeric() || c == '-' || c == '_' {
-                    Some(c)
-                } else {
-                    None
-                }
-            })
-            .collect::<String>()
-            .to_lowercase()
-            == anchor.to_lowercase()
-}
+pub use crate::anchors::heading_matches;
 
 pub fn heading_offset(source: &str, anchor: &str) -> Option<usize> {
-    let mut offset = 0;
-    let mut fence = false;
-    for line in source.split_inclusive('\n') {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fence = !fence;
-        }
-        let count = trimmed.chars().take_while(|c| *c == '#').count();
-        if !fence
-            && (1..=6).contains(&count)
-            && trimmed.as_bytes().get(count) == Some(&b' ')
-            && heading_matches(trimmed[count + 1..].trim_end_matches('#').trim(), anchor)
-        {
-            return Some(offset);
-        }
-        offset += line.len();
-    }
-    None
+    crate::anchors::Index::parse(source)
+        .target(anchor)
+        .map(|r| r.start)
 }
 
 #[cfg(test)]

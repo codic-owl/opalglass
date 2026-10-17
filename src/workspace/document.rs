@@ -2,89 +2,6 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn update_link_styles(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        let revision = (tab.prepared_revision, self.revision);
-        // Resolve only when the document analysis or vault index changes. Never
-        // apply offsets from an older analysis to a buffer with intervening edits.
-        if tab.link_style_revision == revision
-            || tab.prepared_revision != tab.editor.read(cx).buffer.revision()
-        {
-            return;
-        }
-        let Some(vault) = &self.vault else { return };
-        let links = tab
-            .prepared
-            .links
-            .iter()
-            .map(|link| link.range.clone())
-            .collect();
-        let missing = tab
-            .prepared
-            .links
-            .iter()
-            .filter(|link| {
-                !external_link(&link.target) && vault.resolve(&tab.path, &link.target).is_none()
-            })
-            .map(|link| link.range.clone())
-            .collect();
-        let mut code_blocks: Vec<std::ops::Range<usize>> =
-            tab.prepared.frontmatter.iter().cloned().collect();
-        for row in &tab.prepared.rows {
-            if matches!(row.kind, Kind::Code) {
-                if let Some(last) = code_blocks.last_mut()
-                    && last.end == row.source.start
-                {
-                    last.end = row.source.end;
-                } else {
-                    code_blocks.push(row.source.clone());
-                }
-            }
-        }
-        tab.link_style_revision = revision;
-        let syntax = tab.prepared.source_syntax.clone();
-        tab.editor.update(cx, |editor, cx| {
-            editor.set_code_blocks(code_blocks);
-            editor.source_syntax = syntax;
-            editor.set_source_links(links, missing);
-            cx.notify();
-        });
-    }
-    pub(super) fn link_highlight(&self, target: &str) -> HighlightStyle {
-        let attachment = self
-            .vault
-            .as_ref()
-            .zip(self.tabs.get(self.active))
-            .is_some_and(|(vault, tab)| {
-                opalglass::attachments::resolve(&vault.root, &tab.path, target).is_ok()
-            });
-        let missing = !attachment
-            && !target.starts_with(markdown::TAG_TARGET_PREFIX)
-            && !target.starts_with(opalglass::footnotes::TARGET_PREFIX)
-            && !target.starts_with(opalglass::footnotes::BACK_PREFIX)
-            && !external_link(target)
-            && self.tabs.get(self.active).is_some_and(|tab| {
-                self.vault.as_ref().is_some_and(|vault| {
-                    vault.resolve(&tab.path, target).is_none()
-                        && vault.resolve_url(&tab.path, target).is_none()
-                })
-            });
-        HighlightStyle {
-            color: Some(rgb(if missing { MISSING_LINK } else { ACCENT }).into()),
-            underline: Some(if missing {
-                missing_link_underline()
-            } else {
-                UnderlineStyle {
-                    thickness: px(1.),
-                    color: Some(rgb(0x786caa).into()),
-                    wavy: false,
-                }
-            }),
-            ..Default::default()
-        }
-    }
     pub(super) fn sync_reading_scroll(&mut self, cx: &mut Context<Self>) {
         if !self.scroll_locked || self.mode != ViewMode::Split {
             return;
@@ -102,13 +19,13 @@ impl Workspace {
         let range = &tab.prepared.rows[index].source;
         let fraction =
             ((byte - range.start as f64) / range.len().max(1) as f64).clamp(0., 1.) as f32;
-        let visible_index = tab.preview_projection.list_index(index);
-        let fraction = if tab.preview_projection.row(visible_index) == index {
+        let host_index = tab.preview_projection.list_index(index);
+        let fraction = if tab.preview_projection.row(host_index) == index {
             fraction
         } else {
             0.
         };
-        let index = visible_index;
+        let index = tab.composition.projection.list_index(host_index);
         let height = tab
             .preview_scroll
             .bounds_for_item(index)
@@ -213,6 +130,7 @@ impl Workspace {
         let cancelled = tab.prepare_cancelled.clone();
         let text = tab.editor.read(cx).buffer.snapshot();
         let editor_id = tab.editor.entity_id();
+        let live_context = decorate.then(|| tab.prepared.live.clone());
         tab._prepare = Some(cx.spawn(async move |this, cx| {
             let task_cancelled = cancelled.clone();
             if !initial {
@@ -228,7 +146,12 @@ impl Workspace {
                     } else {
                         Prepared::undecorated_cancellable(&text, &cancelled)
                     }
-                    .map(Arc::new)
+                    .map(|mut prepared| {
+                        if let Some(context) = live_context {
+                            prepared.live = context;
+                        }
+                        Arc::new(prepared)
+                    })
                 })
                 .await;
             let Some(prepared) = prepared else {
@@ -247,26 +170,35 @@ impl Workspace {
                 {
                     return;
                 }
-                let offset = tab.preview_scroll.logical_scroll_top();
                 tab.install_prepared(prepared.clone(), tab.prepared_revision == revision);
                 if let Some(pending) = tab.pending_preview.take() {
                     tab.restore_preview_offset(pending);
                 }
-                if let Some(heading) = tab.pending_heading.take()
-                    && offset.item_ix == 0
-                    && offset.offset_in_item == px(0.)
-                    && let Some((_, index)) = prepared
-                        .headings
-                        .iter()
-                        .find(|(title, _)| markdown::heading_matches(title, &heading))
-                {
-                    tab.reveal_preview_row(*index);
+                let mut missing_anchor = None;
+                if let Some(pending) = tab.pending_anchor.take() {
+                    let editor = tab.editor.read(cx);
+                    if pending.revision == editor.buffer.revision()
+                        && pending.cursor == editor.buffer.cursor()
+                        && !tab.navigate_anchor(&pending.fragment, cx)
+                    {
+                        missing_anchor = Some(pending.fragment);
+                    }
                 }
                 tab.prepared_revision = revision;
                 if !prepared.analysis_complete() {
                     tab.requested_revision = u64::MAX;
                 }
-                tab.link_style_revision = (u64::MAX, u64::MAX);
+                for tab in &mut this.tabs {
+                    tab.link_style_revision = (u64::MAX, u64::MAX);
+                }
+                this.preview_revision = None;
+                if let Some(fragment) = missing_anchor {
+                    this.message(
+                        format!("Link target #{fragment} was not found in this note"),
+                        false,
+                        cx,
+                    );
+                }
                 cx.notify();
             });
         }));
@@ -385,62 +317,14 @@ impl Workspace {
         cx.notify();
     }
     pub(super) fn follow(&mut self, target: String, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(number) = target
-            .strip_prefix(opalglass::footnotes::TARGET_PREFIX)
-            .and_then(|n| n.parse().ok())
-        {
-            if let Some(tab) = self.tabs.get_mut(self.active)
-                && let Some(row) = tab.prepared.footnotes.target_row(number)
-            {
-                let byte = tab.prepared.rows[row].source.start;
-                tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
-                tab.reveal_preview_row(row);
-                self.preview_pane.update(cx, |_, cx| cx.notify());
-            }
+        let Some(tab) = self.tabs.get(self.active) else {
             return;
-        }
-        if let Some(byte) = target
-            .strip_prefix(opalglass::footnotes::BACK_PREFIX)
-            .and_then(|n| n.parse().ok())
-        {
-            if let Some(tab) = self.tabs.get_mut(self.active) {
-                let row = tab.prepared.row_at_source(byte);
-                tab.editor.update(cx, |e, cx| e.jump_to(byte, cx));
-                tab.reveal_preview_row(row);
-                self.preview_pane.update(cx, |_, cx| cx.notify());
-            }
-            return;
-        }
-        if let Some(tag) = target.strip_prefix(markdown::TAG_TARGET_PREFIX) {
-            self.filter_tag(tag, window, cx);
-            return;
-        }
-        if let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active)) {
-            if let Ok(path) = opalglass::attachments::resolve(&vault.root, &tab.path, &target) {
-                cx.open_with_system(&path);
-                return;
-            }
-            if let Some(path) = vault
-                .resolve(&tab.path, &target)
-                .or_else(|| vault.resolve_url(&tab.path, &target))
-            {
-                self.open_note_at(
-                    path,
-                    target.split_once('#').map(|(_, h)| h.to_owned()),
-                    window,
-                    cx,
-                );
-            } else {
-                self.show_modal(Modal::New, window, cx);
-                self.input.update(cx, |editor, cx| {
-                    editor.set_text(target.split('#').next().unwrap_or(&target), cx)
-                });
-                self.message(
-                    "Link target is missing or ambiguous. Choose a path for the new note.",
-                    false,
-                    cx,
-                );
-            }
-        }
+        };
+        self.follow_reading(
+            reading_context::ReadingContext::host(tab),
+            target,
+            window,
+            cx,
+        );
     }
 }

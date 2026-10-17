@@ -12,82 +12,9 @@ use std::{
     time::SystemTime,
 };
 
-#[derive(Debug, Clone)]
-pub struct Note {
-    pub path: PathBuf,
-    pub title: String,
-    pub links: Vec<WikiLink>,
-    pub tags: Vec<String>,
-    pub references: Vec<crate::links::Reference>,
-    content_hash: [u8; 32],
-    search_path: String,
-    stamp: Option<Stamp>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: Option<SystemTime>,
-    created: Option<SystemTime>,
-    #[cfg(unix)]
-    changed: (i64, i64),
-}
-
-impl Stamp {
-    fn new(meta: &fs::Metadata) -> Self {
-        Self {
-            len: meta.len(),
-            modified: meta.modified().ok(),
-            created: meta.created().ok(),
-            #[cfg(unix)]
-            changed: {
-                use std::os::unix::fs::MetadataExt;
-                (meta.ctime(), meta.ctime_nsec())
-            },
-        }
-    }
-}
-
-impl Note {
-    /// Compare saved contents without keeping another copy of the note body.
-    /// Writes still compare the full disk text immediately before replacement.
-    pub fn matches_text(&self, text: &str) -> bool {
-        self.content_hash == <[u8; 32]>::from(Sha256::digest(text.as_bytes()))
-    }
-    pub fn has_tag(&self, query: &str) -> bool {
-        let query = query.trim_start_matches('#').to_lowercase();
-        self.tags.iter().any(|tag| {
-            let tag = tag.to_lowercase();
-            tag == query
-                || tag
-                    .strip_prefix(&query)
-                    .is_some_and(|rest| rest.starts_with('/'))
-        })
-    }
-    pub fn modified(&self) -> Option<SystemTime> {
-        self.stamp.as_ref().and_then(|stamp| stamp.modified)
-    }
-    pub fn created(&self) -> Option<SystemTime> {
-        self.stamp.as_ref().and_then(|stamp| stamp.created)
-    }
-    fn new(path: PathBuf, text: &str, stamp: Option<Stamp>) -> Self {
-        let analysis = crate::links::analyze(text);
-        Self {
-            title: path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            search_path: path.to_string_lossy().to_lowercase(),
-            links: analysis.wiki_links,
-            tags: analysis.tags,
-            references: analysis.references,
-            path,
-            content_hash: Sha256::digest(text.as_bytes()).into(),
-            stamp,
-        }
-    }
-}
+mod note;
+pub use note::Note;
+use note::Stamp;
 
 #[derive(Debug, Default, Clone)]
 struct Indexes {
@@ -238,7 +165,7 @@ impl Vault {
                     if !contents {
                         entries
                             .notes
-                            .push(Arc::new(Note::new(relative.into(), "", None)));
+                            .push(Arc::new(Note::discovered(relative.into())));
                         continue;
                     }
                     let stamp = Stamp::new(&entry.metadata()?);
@@ -302,94 +229,6 @@ impl Vault {
             return Ok(true);
         }
         Ok(changed)
-    }
-    fn reindex(&mut self) {
-        self.reindex_cancellable(&AtomicBool::new(false)).unwrap();
-    }
-    fn reindex_cancellable(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
-        let mut indexes = Indexes::default();
-        for (index, note) in self.notes.iter().enumerate() {
-            check_cancelled(cancelled)?;
-            indexes.paths.insert(note.path.clone(), index);
-            indexes
-                .titles
-                .entry(note.title.clone())
-                .and_modify(|v| *v = None)
-                .or_insert(Some(index));
-        }
-        indexes.references = crate::links::Resolver::new(
-            self.notes
-                .iter()
-                .map(|n| n.path.clone())
-                .chain(self.files.iter().cloned()),
-        );
-        // Resolve using the new path/title maps before building incoming links.
-        self.indexes = Arc::new(indexes);
-        let mut incoming: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-        for (index, note) in self.notes.iter().enumerate() {
-            check_cancelled(cancelled)?;
-            let mut seen = HashSet::new();
-            for link in &note.links {
-                check_cancelled(cancelled)?;
-                if !seen.insert(link.target.as_str()) {
-                    continue;
-                }
-                if let Some(target) = self.resolve(&note.path, &link.target)
-                    && target != note.path
-                {
-                    let sources = incoming.entry(target).or_default();
-                    if sources.last() != Some(&index) {
-                        sources.push(index);
-                    }
-                }
-            }
-        }
-        Arc::get_mut(&mut self.indexes).unwrap().incoming = incoming;
-        Ok(())
-    }
-    fn update_note(&mut self, path: &Path, text: &str) {
-        // Revalidate a local write on the next scan. Sampling metadata after
-        // replacement could accidentally cache a concurrent writer's timestamp
-        // alongside our older text.
-        let note = Arc::new(Note::new(path.into(), text, None));
-        if let Some(&index) = self.indexes.paths.get(path) {
-            // Saving an existing path cannot change name resolution or note
-            // indices. Update only its outgoing edges, not the entire vault.
-            let targets = |note: &Note| {
-                let mut seen = HashSet::new();
-                note.links
-                    .iter()
-                    .filter(|link| seen.insert(link.target.as_str()))
-                    .filter_map(|link| self.resolve(&note.path, &link.target))
-                    .filter(|target| target != &note.path)
-                    .collect::<HashSet<_>>()
-            };
-            let old = targets(&self.notes[index]);
-            let new = targets(&note);
-            Arc::make_mut(&mut self.notes)[index] = note;
-            if old != new {
-                let indexes = Arc::make_mut(&mut self.indexes);
-                for target in old.difference(&new) {
-                    if let Some(sources) = indexes.incoming.get_mut(target) {
-                        sources.retain(|&source| source != index);
-                        if sources.is_empty() {
-                            indexes.incoming.remove(target);
-                        }
-                    }
-                }
-                for target in new.difference(&old) {
-                    let sources = indexes.incoming.entry(target.clone()).or_default();
-                    if let Err(position) = sources.binary_search(&index) {
-                        sources.insert(position, index);
-                    }
-                }
-            }
-        } else {
-            let notes = Arc::make_mut(&mut self.notes);
-            notes.push(note);
-            notes.sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
-            self.reindex();
-        }
     }
     /// Paths must stay relative, visible and portable between Windows and Unix.
     pub fn note_path(name: &str) -> io::Result<PathBuf> {
@@ -577,179 +416,6 @@ impl Vault {
         }
         Ok(())
     }
-    /// Move an entry and preserve resolved wiki, Markdown and attachment links. Callers
-    /// save their open buffers first. All work may run on a background thread.
-    pub fn move_entry(&mut self, from: &Path, to: &Path) -> io::Result<()> {
-        let source = self.checked_entry(from)?;
-        let destination = self.checked_entry(to)?;
-        if to == from || to.starts_with(from) {
-            return Err(invalid("Choose a different location outside this folder"));
-        }
-        self.check_destination(to, Some(from))?;
-        let is_folder = fs::metadata(&source)?.is_dir();
-        if !is_folder
-            && from
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-                != to.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))
-        {
-            return Err(invalid(
-                "Notes must keep their .md extension; attachments cannot become notes",
-            ));
-        }
-        self.refresh()?;
-        // Build the post-move resolver before touching any files. This also
-        // detects outbound links whose local or basename lookup would change.
-        let mut after = self.clone();
-        after.notes = Arc::new(
-            self.notes
-                .iter()
-                .map(|note| {
-                    let path = moved_path(&note.path, from, to);
-                    if path == note.path {
-                        return note.clone();
-                    }
-                    let mut new = (**note).clone();
-                    new.path = path;
-                    new.title = new
-                        .path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into();
-                    new.search_path = new.path.to_string_lossy().to_lowercase();
-                    new.stamp = None;
-                    Arc::new(new)
-                })
-                .collect(),
-        );
-        after.folders = Arc::new(
-            self.folders
-                .iter()
-                .map(|p| moved_path(p, from, to))
-                .collect(),
-        );
-        after.files = Arc::new(self.files.iter().map(|p| moved_path(p, from, to)).collect());
-        after.reindex();
-        let before_paths = &self.indexes.references;
-        let after_paths = &after.indexes.references;
-        let mut edits = Vec::new();
-        for note in self.notes.iter() {
-            let new_path = moved_path(&note.path, from, to);
-            let mut edit: Option<(String, String)> = None;
-            for link in note.references.iter().rev() {
-                let Some(target) = before_paths.resolve(&note.path, &link.target, link.wiki) else {
-                    continue;
-                };
-                let target = moved_path(&target, from, to);
-                if after_paths
-                    .resolve(&new_path, &link.target, link.wiki)
-                    .as_ref()
-                    == Some(&target)
-                {
-                    continue;
-                }
-                let mut replacement = crate::links::retarget(&new_path, &target, &link.target, link.wiki)
-                    .ok_or_else(|| invalid("This destination cannot be addressed by wiki links; avoid # and ]] in its name"))?;
-                if link.wiki
-                    && replacement.starts_with('/')
-                    && after_paths
-                        .resolve(&new_path, &replacement[1..], true)
-                        .as_ref()
-                        == Some(&target)
-                {
-                    replacement.remove(0);
-                }
-                if edit.is_none() {
-                    let baseline = self.read(&note.path)?;
-                    // Link ranges belong to the scanned contents. A racing edit
-                    // must not apply those ranges to different UTF-8 text.
-                    if !note.matches_text(&baseline) {
-                        return Err(invalid("A note changed while preparing the move; retry"));
-                    }
-                    edit = Some((baseline.clone(), baseline));
-                }
-                let (_, text) = edit.as_mut().unwrap();
-                text.replace_range(link.destination.clone(), &replacement);
-            }
-            if let Some((baseline, text)) = edit {
-                edits.push((note.path.clone(), baseline, text));
-            }
-        }
-        // Preflight every file before any replacement. save() checks again at
-        // each write and the rollback refuses to overwrite concurrent edits.
-        for (path, baseline, _) in &edits {
-            if self.read(path)? != *baseline {
-                return Err(invalid("A note changed while preparing the move; retry"));
-            }
-        }
-        self.commit_move(&edits, &source, &destination)?;
-        // Install the committed snapshot without another fallible directory scan.
-        let mut changed: HashMap<_, _> = edits
-            .into_iter()
-            .map(|(p, _, text)| (moved_path(&p, from, to), text))
-            .collect();
-        after.notes = Arc::new(
-            after
-                .notes
-                .iter()
-                .map(|n| {
-                    changed
-                        .remove(&n.path)
-                        .map(|text| Arc::new(Note::new(n.path.clone(), &text, None)))
-                        .unwrap_or_else(|| n.clone())
-                })
-                .collect(),
-        );
-        Arc::make_mut(&mut after.notes)
-            .sort_by(|a, b| a.search_path.cmp(&b.search_path).then(a.path.cmp(&b.path)));
-        Arc::make_mut(&mut after.folders).sort();
-        Arc::make_mut(&mut after.files).sort();
-        after.reindex();
-        *self = after;
-        Ok(())
-    }
-    fn commit_move(
-        &self,
-        edits: &[(PathBuf, String, String)],
-        source: &Path,
-        destination: &Path,
-    ) -> io::Result<()> {
-        let mut written = 0;
-        let result = (|| -> io::Result<()> {
-            for (path, baseline, text) in edits {
-                // Count the attempt: persistence can succeed before a directory
-                // sync reports an error, so the failing write may need rollback.
-                written += 1;
-                self.save_file(path, baseline, text)
-                    .map_err(io::Error::other)?;
-            }
-            // Atomic NOREPLACE prevents a racing writer's destination from
-            // being overwritten, including an empty directory on Linux.
-            crate::platform::rename_new(source, destination)?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let mut failures = Vec::new();
-            for (path, old, new) in edits[..written].iter().rev() {
-                if self.read(path).as_ref().is_ok_and(|text| text == old) {
-                    continue;
-                }
-                if let Err(e) = self.save_file(path, new, old) {
-                    failures.push(format!("{}: {e}", path.display()));
-                }
-            }
-            return Err(if failures.is_empty() {
-                error
-            } else {
-                io::Error::other(format!(
-                    "{error}. Some link changes could not be rolled back: {}",
-                    failures.join("; ")
-                ))
-            });
-        }
-        Ok(())
-    }
     pub fn read(&self, path: &Path) -> io::Result<String> {
         fs::read_to_string(self.checked(path)?)
     }
@@ -817,50 +483,6 @@ impl Vault {
         fs::File::open(full.parent().unwrap())?.sync_all()?;
         Ok(())
     }
-    pub fn resolve(&self, from: &Path, target: &str) -> Option<PathBuf> {
-        let target = target.split('#').next().unwrap_or(target);
-        if target.is_empty() {
-            return Some(from.into());
-        }
-        let rooted = target.starts_with('/');
-        let path = Self::note_path(target.strip_prefix('/').unwrap_or(target)).ok()?;
-        if rooted {
-            return self
-                .indexes
-                .paths
-                .get(&path)
-                .map(|&i| self.notes[i].path.clone());
-        }
-        let local = from.parent().unwrap_or(Path::new("")).join(&path);
-        for candidate in [&local, &path] {
-            if let Some(&index) = self.indexes.paths.get(candidate) {
-                return Some(self.notes[index].path.clone());
-            }
-        }
-        if path.components().count() > 1 {
-            return None;
-        }
-        let stem = path.file_stem()?.to_string_lossy();
-        self.indexes
-            .titles
-            .get(stem.as_ref())
-            .copied()
-            .flatten()
-            .map(|index| self.notes[index].path.clone())
-    }
-    pub fn contains_path(&self, path: &Path) -> bool {
-        self.indexes.paths.contains_key(path)
-    }
-    /// Resolve standard Markdown URLs, including percent escapes and `../`.
-    pub fn resolve_attachment(&self, from: &Path, target: &str) -> Option<PathBuf> {
-        self.indexes
-            .references
-            .resolve(from, target, true)
-            .filter(|p| self.files.contains(p))
-    }
-    pub fn resolve_url(&self, from: &Path, target: &str) -> Option<PathBuf> {
-        self.indexes.references.resolve(from, target, false)
-    }
     pub fn file_path(&self, path: &Path) -> io::Result<PathBuf> {
         if !self.files.contains(&path.to_owned()) {
             return Err(invalid("Attachment is not in this vault"));
@@ -917,3 +539,9 @@ pub fn moved_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests;
+
+mod moves;
+
+mod index;
+
+mod resolve;

@@ -35,3 +35,6 @@ pub fn missing_link_underline() -> gpui::UnderlineStyle {
         wavy: true,
     }
 }
+
+#[path = "theme/typography.rs"]
+pub(crate) mod typography;

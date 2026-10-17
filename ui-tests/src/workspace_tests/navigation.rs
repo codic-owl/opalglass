@@ -261,7 +261,7 @@ fn missing_note_links_update_after_vault_changes_and_edits(cx: &mut TestAppConte
     cx.run_until_parked();
     view.read_with(cx, |this, cx| {
         let editor = this.tabs[this.active].editor.read(cx);
-        assert_eq!(editor.source_links.len(), 3); // Code examples are excluded.
+        assert_eq!(editor.source_links.len(), 4); // Includes the Markdown URL; code is excluded.
         assert_eq!(editor.missing_links.len(), 1);
         assert_eq!(
             &editor.buffer.text()[editor.missing_links[0].clone()],

@@ -66,6 +66,7 @@ pub struct Editor {
     pub line_numbers: bool,
     live_revealed: Option<Range<usize>>,
     live_lines: Vec<(Range<usize>, bool, Arc<live::Line>)>,
+    live_context: Option<(u64, Arc<live::Context>)>,
     code_blocks: Vec<Range<usize>>,
     placeholder: String,
     bounds: Bounds<Pixels>,
@@ -77,6 +78,7 @@ pub struct Editor {
     dragging: bool,
     preferred_x: Option<Pixels>,
     source_ranges: Vec<Range<usize>>,
+    visibility: visibility::SourceVisibility,
     source_version: u64,
     source_complete: bool,
     source_requested_revision: u64,
@@ -126,6 +128,7 @@ impl Editor {
             line_numbers: true,
             live_revealed: None,
             live_lines: Vec::new(),
+            live_context: None,
             code_blocks: Vec::new(),
             placeholder: placeholder.into(),
             bounds: Bounds::default(),
@@ -137,6 +140,7 @@ impl Editor {
             dragging: false,
             preferred_x: None,
             source_ranges: Vec::new(),
+            visibility: visibility::SourceVisibility::default(),
             source_version: u64::MAX,
             source_complete: false,
             source_requested_revision: u64::MAX,
@@ -166,6 +170,9 @@ impl Editor {
         self._source_prepare = None;
         self.cached_rows.clear();
         self.live_lines.clear();
+        self.live_context = None;
+        self.visibility = visibility::SourceVisibility::default();
+        self.source_ranges.clear();
         self.code_blocks.clear();
         self.source_links.clear();
         self.source_syntax = Arc::new(Vec::new());
@@ -219,7 +226,7 @@ impl Editor {
         self.cached_rows.clear();
         let offset = self.source_list.logical_scroll_top();
         self.source_list
-            .splice(0..self.source_list.item_count(), self.source_ranges.len());
+            .splice(0..self.source_list.item_count(), self.visibility.rows.len());
         self.source_list.scroll_to(offset);
         cx.notify();
     }
@@ -240,10 +247,8 @@ impl Editor {
         self.live_revealed = None;
         self.live_lines.clear();
         self.cached_rows.clear();
-        let offset = self.source_list.logical_scroll_top();
-        self.source_list
-            .splice(0..self.source_list.item_count(), self.source_ranges.len());
-        self.source_list.scroll_to(offset);
+        self.prepare_source();
+        self.refresh_visibility(true, None);
         cx.notify();
     }
     pub fn set_code_blocks(&mut self, ranges: Vec<Range<usize>>) {
@@ -251,53 +256,6 @@ impl Editor {
             self.code_blocks = ranges;
             self.live_lines.clear();
             self.cached_rows.clear();
-        }
-    }
-    pub fn saved_scroll(&self) -> opalglass::navigation::ScrollPosition {
-        self.pending_scroll.unwrap_or_else(|| {
-            let pos = self.source_list.logical_scroll_top();
-            opalglass::navigation::ScrollPosition {
-                row: pos.item_ix,
-                offset: pos.offset_in_item.into(),
-            }
-        })
-    }
-    pub fn restore_position(
-        &mut self,
-        anchor: usize,
-        cursor: usize,
-        scroll: opalglass::navigation::ScrollPosition,
-        cx: &mut Context<Self>,
-    ) {
-        self.buffer.select(anchor, cursor);
-        self.pending_scroll = Some(scroll);
-        self.reveal = false;
-        cx.notify();
-    }
-    pub fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
-        self.source_list.scroll_by(delta);
-        self.reveal = false;
-        cx.notify();
-    }
-    fn publish_scroll_anchor(&mut self, cx: &mut Context<Self>) {
-        let offset = self.source_list.logical_scroll_top();
-        let Some(range) = self.source_ranges.get(offset.item_ix) else {
-            return;
-        };
-        let height = self
-            .cached_rows
-            .iter()
-            .rev()
-            .find(|row| row.range == *range)
-            .map_or(px(LINE), |row| row.line.size(row.line_height).height);
-        let fraction = (f32::from(offset.offset_in_item) / f32::from(height).max(1.)).clamp(0., 1.);
-        let anchor = (
-            self.buffer.revision(),
-            range.start as f64 + range.len() as f64 * fraction as f64,
-        );
-        if self.scroll_anchor != Some(anchor) {
-            self.scroll_anchor = Some(anchor);
-            cx.emit(ScrollAnchor);
         }
     }
     fn changed(&mut self, cx: &mut Context<Self>) {
@@ -459,339 +417,11 @@ impl Editor {
             text
         }
     }
-    fn origin(&self) -> Point<Pixels> {
-        self.bounds.origin
-            + point(
-                px(if self.single_line { 12. } else { PAD }) - self.scroll_x,
-                px(if self.single_line { 7. } else { PAD }) - self.scroll,
-            )
-    }
-    fn point_for(&self, byte: usize) -> Point<Pixels> {
-        if !self.single_line {
-            if let Some(row) = self
-                .visible_rows
-                .iter()
-                .rev()
-                .find(|r| r.range.start <= byte && byte <= r.range.end)
-            {
-                return row.origin
-                    + row
-                        .line
-                        .position_for_index(
-                            row.projection.display_index(byte - row.range.start),
-                            row.line_height,
-                        )
-                        .unwrap_or_default();
-            }
-            return self.bounds.origin;
-        }
-        for row in &self.rows {
-            if byte <= row.start + row.line.len() {
-                return self.origin()
-                    + point(px(0.), row.top)
-                    + row
-                        .line
-                        .position_for_index(byte.saturating_sub(row.start), px(LINE))
-                        .unwrap_or_default();
-            }
-        }
-        self.origin()
-    }
-    fn index_for(&self, position: Point<Pixels>) -> usize {
-        if !self.single_line {
-            if let Some(row) = self
-                .visible_rows
-                .iter()
-                .find(|r| position.y < r.origin.y + r.line.size(r.line_height).height)
-                .or_else(|| self.visible_rows.last())
-            {
-                let local = point(
-                    position.x - row.origin.x,
-                    (position.y - row.origin.y).max(px(0.)),
-                );
-                let display = row
-                    .line
-                    .closest_index_for_position(local, row.line_height)
-                    .unwrap_or_else(|i| i);
-                return row.range.start + row.projection.source_index(display).min(row.range.len());
-            }
-            return self.buffer.cursor();
-        }
-        let local = position - self.origin();
-        for row in &self.rows {
-            if local.y < row.top + row.line.size(px(LINE)).height {
-                let index = row
-                    .line
-                    .closest_index_for_position(
-                        point(local.x, (local.y - row.top).max(px(0.))),
-                        px(LINE),
-                    )
-                    .unwrap_or_else(|i| i);
-                return (row.start + index).min(self.buffer.text().len());
-            }
-        }
-        self.buffer.text().len()
-    }
-    fn visual_move(
-        &mut self,
-        down: bool,
-        extend: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let height = if !self.single_line {
-            self.prepare_source();
-            let index = self
-                .source_ranges
-                .partition_point(|r| r.start <= self.buffer.cursor())
-                .saturating_sub(1);
-            self.shaped_source_row(index, window, cx).line_height
-        } else {
-            px(LINE)
-        };
-        self.move_vertical(if down { height } else { -height }, extend, window, cx);
-    }
-    fn move_vertical(
-        &mut self,
-        distance: Pixels,
-        extend: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.prepare_source();
-        let cursor = self.buffer.cursor();
-        let mut index = self
-            .source_ranges
-            .partition_point(|r| r.start <= cursor)
-            .saturating_sub(1);
-        let mut line = self.shaped_source_row(index, window, cx);
-        let pos = line
-            .line
-            .position_for_index(
-                line.projection
-                    .display_index(cursor - self.source_ranges[index].start),
-                line.line_height,
-            )
-            .unwrap_or_default();
-        let x = *self.preferred_x.get_or_insert(pos.x);
-        let mut y = pos.y + line.line_height / 2. + distance;
-        loop {
-            let height = line
-                .line
-                .size(line.line_height)
-                .height
-                .max(line.line_height);
-            if y < px(0.) && index > 0 {
-                index -= 1;
-                line = self.shaped_source_row(index, window, cx);
-                y += line
-                    .line
-                    .size(line.line_height)
-                    .height
-                    .max(line.line_height);
-            } else if y >= height && index + 1 < self.source_ranges.len() {
-                y -= height;
-                index += 1;
-                line = self.shaped_source_row(index, window, cx);
-            } else {
-                let range = &self.source_ranges[index];
-                let offset = if y < px(0.) {
-                    0
-                } else if y >= height {
-                    line.projection.text.len()
-                } else {
-                    line.line
-                        .closest_index_for_position(point(x, y), line.line_height)
-                        .unwrap_or_else(|i| i)
-                };
-                self.buffer.move_to(
-                    range.start + line.projection.source_index(offset).min(range.len()),
-                    extend,
-                );
-                break;
-            }
-        }
-    }
-    fn shaped_source_row(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> CachedRow {
-        let _ = self.source_row(index, window, cx);
-        self.cached_rows
-            .iter()
-            .rev()
-            .find(|r| r.range == self.source_ranges[index])
-            .unwrap()
-            .clone()
-    }
-    pub fn place_drop_caret(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        if self.bounds.contains(&position) {
-            self.buffer.move_to(self.index_for(position), false);
-            self.reveal_cursor(cx);
-        }
-    }
     pub fn set_source_links(&mut self, links: Vec<Range<usize>>, missing: Vec<Range<usize>>) {
         self.syntax_version = self.buffer.revision();
         self.source_links = links;
         self.missing_links = missing;
         self.cached_rows.clear();
-    }
-    fn prepare_source(&mut self) {
-        if self.single_line {
-            return;
-        }
-        if self.source_version != self.buffer.revision() {
-            if self.syntax_version != self.buffer.revision() {
-                self.source_links.clear();
-                self.source_syntax = Arc::new(Vec::new());
-                self.missing_links.clear();
-            }
-            let offset = self.source_list.logical_scroll_top();
-            self._source_prepare = None;
-            if self.source_version == u64::MAX {
-                (self.source_ranges, self.source_complete) =
-                    opalglass::document::opening_source_rows(self.buffer.text());
-            } else {
-                self.source_ranges = opalglass::document::source_rows(self.buffer.text());
-                self.source_complete = true;
-            }
-            self.source_list
-                .splice(0..self.source_list.item_count(), self.source_ranges.len());
-            self.source_list.scroll_to(offset);
-            self.source_version = self.buffer.revision();
-            self.find_matches = Arc::new(Vec::new());
-            self.cached_rows.clear();
-            self.live_lines.clear();
-        }
-        if self.live_preview {
-            let selection = self.buffer.selection();
-            let revealed =
-                self.buffer.line_start(selection.start)..self.buffer.line_end(selection.end) + 1;
-            if self.live_revealed.as_ref() != Some(&revealed) {
-                let offset = self.source_list.logical_scroll_top();
-                for range in self.live_revealed.iter().chain(std::iter::once(&revealed)) {
-                    let start = self.source_ranges.partition_point(|r| r.end < range.start);
-                    let end = self.source_ranges.partition_point(|r| r.start < range.end);
-                    if end > start {
-                        self.source_list.splice(start..end, end - start);
-                    }
-                }
-                self.source_list.scroll_to(offset);
-                self.live_revealed = Some(revealed);
-            }
-        }
-        // Explicit navigation outside the opening viewport must work even if
-        // the background index has not arrived yet (Ctrl+End, heading jumps).
-        if !self.source_complete
-            && self.pending_scroll.is_none()
-            && self.buffer.cursor() >= self.source_ranges.last().map_or(0, |r| r.end)
-        {
-            let ranges = opalglass::document::source_rows(self.buffer.text());
-            self.finish_source_index(ranges);
-            self._source_prepare = None;
-        }
-        if let Some(pos) = self.pending_scroll
-            && (self.source_complete || pos.row < self.source_ranges.len())
-        {
-            self.source_list.scroll_to(ListOffset {
-                item_ix: pos.row.min(self.source_ranges.len().saturating_sub(1)),
-                offset_in_item: px(pos.offset),
-            });
-            self.pending_scroll = None;
-        }
-        if self.reveal {
-            let index = self
-                .source_ranges
-                .partition_point(|r| r.start <= self.buffer.cursor())
-                .saturating_sub(1);
-            let visible = self.visible_rows.iter().any(|r| {
-                r.range.start == self.source_ranges[index].start
-                    && r.origin.y >= self.bounds.top()
-                    && r.origin.y + r.line_height <= self.bounds.bottom()
-            });
-            if visible {
-                self.source_list.scroll_to_reveal_item(index);
-            } else {
-                self.source_list.scroll_to(ListOffset {
-                    item_ix: index,
-                    offset_in_item: px(0.),
-                });
-            }
-            self.reveal = false;
-        }
-    }
-    fn finish_source_index(&mut self, ranges: Vec<Range<usize>>) {
-        let count = self.source_ranges.len();
-        debug_assert_eq!(&ranges[..count], self.source_ranges.as_slice());
-        // Keep measured viewport rows and its scroll offset intact; append only
-        // the newly indexed tail rather than rebuilding the whole list.
-        self.source_list.splice(count..count, ranges.len() - count);
-        self.source_ranges = ranges;
-        self.source_complete = true;
-    }
-    fn start_source_index(&mut self, revision: u64, cx: &mut Context<Self>) {
-        if self.source_complete || self.buffer.revision() != revision {
-            return;
-        }
-        let text = self.buffer.snapshot();
-        self._source_prepare = Some(cx.spawn(async move |this, cx| {
-            let ranges = cx
-                .background_executor()
-                .spawn(async move { opalglass::document::source_rows(&text) })
-                .await;
-            let _ = this.update(cx, |editor, cx| {
-                if editor.buffer.revision() != revision || editor.source_complete {
-                    return;
-                }
-                editor.finish_source_index(ranges);
-                cx.notify();
-            });
-        }));
-    }
-    fn projection(&mut self, range: &Range<usize>, revealed: bool) -> Arc<live::Line> {
-        if !self.live_preview {
-            return Arc::new(live::Line::raw(&self.buffer.text()[range.clone()]));
-        }
-        let start = self.buffer.line_start(range.start);
-        let end = self.buffer.line_end(range.start);
-        // Bound even a pathological single-line note. Normal lines are parsed as
-        // a unit so inline markup can cross the 256-byte virtual row boundaries.
-        let physical = if end - start <= 8192 {
-            start..end
-        } else {
-            range.clone()
-        };
-        let cached = self
-            .live_lines
-            .iter()
-            .find(|(r, active, _)| *r == physical && *active == revealed)
-            .map(|(_, _, line)| line.clone());
-        let line = cached.unwrap_or_else(|| {
-            let i = self.code_blocks.partition_point(|r| r.end <= range.start);
-            let code = self
-                .code_blocks
-                .get(i)
-                .is_some_and(|r| r.contains(&range.start));
-            let line = Arc::new(live::Line::new(
-                &self.buffer.text()[physical.clone()],
-                revealed,
-                code,
-                physical.start != start,
-            ));
-            if self.live_lines.len() >= 128 {
-                self.live_lines.drain(..64);
-            }
-            self.live_lines
-                .push((physical.clone(), revealed, line.clone()));
-            line
-        });
-        if physical == *range {
-            line
-        } else {
-            Arc::new(line.slice(range.start - physical.start..range.end - physical.start))
-        }
     }
 }
 
@@ -805,3 +435,21 @@ impl Focusable for Editor {
 mod input;
 #[path = "editor/rendering.rs"]
 mod rendering;
+
+#[path = "editor/projection.rs"]
+mod projection;
+
+#[path = "editor/view.rs"]
+mod view;
+
+#[path = "editor/painting.rs"]
+mod painting;
+
+#[path = "editor/navigation.rs"]
+mod navigation;
+
+#[path = "editor/visibility.rs"]
+mod visibility;
+
+#[path = "editor/callout_view.rs"]
+mod callout_view;

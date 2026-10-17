@@ -29,136 +29,6 @@ const ACCENT: u32 = 0xb8a5fa;
 const SIDEBAR_RAIL_WIDTH: f32 = 36.;
 const SPLIT_DIVIDER_WIDTH: f32 = 7.;
 
-struct Tab {
-    path: PathBuf,
-    baseline: String,
-    external_changed: bool,
-    editor: Entity<Editor>,
-    baseline_normalized: Arc<String>,
-    dirty_cache: Cell<(u64, bool)>,
-    prepared: Arc<Prepared>,
-    prepared_revision: u64,
-    initial_frame_pending: bool,
-    pending_heading: Option<String>,
-    pending_preview: Option<ListOffset>,
-    link_style_revision: (u64, u64),
-    requested_revision: u64,
-    _prepare: Option<Task<()>>,
-    _disk_reload: Option<Task<()>>,
-    prepare_cancelled: Arc<AtomicBool>,
-    preview_scroll: ListState,
-    preview_projection: opalglass::callouts::Projection,
-    connections_cache: Option<ConnectionSnapshot>,
-    connections_scroll: UniformListScrollHandle,
-    _subscription: Subscription,
-    _scroll_subscription: Subscription,
-    _completion_subscription: Subscription,
-    _link_subscription: Subscription,
-    _attachment_subscription: Subscription,
-}
-impl Tab {
-    fn saved_preview_offset(&self) -> ListOffset {
-        let offset = self.preview_scroll.logical_scroll_top();
-        ListOffset {
-            item_ix: self.preview_projection.row(offset.item_ix),
-            ..offset
-        }
-    }
-    fn restore_preview_offset(&mut self, offset: ListOffset) {
-        self.reveal_preview_row(offset.item_ix);
-        self.preview_scroll.scroll_to(ListOffset {
-            item_ix: self.preview_projection.list_index(offset.item_ix),
-            ..offset
-        });
-    }
-    fn install_prepared(&mut self, prepared: Arc<Prepared>, preserve_folds: bool) {
-        let offset = self.preview_scroll.logical_scroll_top();
-        let byte = self
-            .prepared
-            .rows
-            .get(self.preview_projection.row(offset.item_ix))
-            .map_or(0, |r| r.source.start);
-        if !preserve_folds {
-            self.preview_projection.overrides.clear();
-        }
-        self.preview_projection
-            .rebuild(prepared.rows.len(), &prepared.callouts);
-        self.preview_projection.with_footnotes(
-            prepared.rows.len(),
-            &prepared.footnotes,
-            &prepared.callouts,
-        );
-        self.preview_scroll.splice(
-            0..self.preview_scroll.item_count(),
-            self.preview_projection.len(prepared.rows.len()),
-        );
-        let row = prepared.row_at_source(byte);
-        self.preview_scroll.scroll_to(ListOffset {
-            item_ix: self.preview_projection.list_index(row),
-            offset_in_item: offset.offset_in_item,
-        });
-        self.prepared = prepared;
-    }
-    fn reveal_preview_row(&mut self, row: usize) {
-        let mut changed = false;
-        for callout in &self.prepared.callouts {
-            if callout.rows.contains(&row)
-                && row > callout.rows.start
-                && self.preview_projection.collapsed(callout)
-            {
-                self.preview_projection
-                    .overrides
-                    .insert(callout.source.start, false);
-                changed = true;
-            }
-        }
-        if changed {
-            self.preview_projection
-                .rebuild(self.prepared.rows.len(), &self.prepared.callouts);
-            self.preview_projection.with_footnotes(
-                self.prepared.rows.len(),
-                &self.prepared.footnotes,
-                &self.prepared.callouts,
-            );
-            self.preview_scroll.splice(
-                0..self.preview_scroll.item_count(),
-                self.preview_projection.len(self.prepared.rows.len()),
-            );
-        }
-        self.preview_scroll.scroll_to(ListOffset {
-            item_ix: self.preview_projection.list_index(row),
-            offset_in_item: px(0.),
-        });
-    }
-    fn cancel_opening_analysis(&mut self) {
-        if !self.prepared.analysis_complete() {
-            self.prepare_cancelled.store(true, Ordering::Relaxed);
-            self._prepare = None;
-            self.requested_revision = u64::MAX;
-        }
-    }
-    fn dirty(&self, cx: &App) -> bool {
-        let buffer = &self.editor.read(cx).buffer;
-        if self.dirty_cache.get().0 != buffer.revision() {
-            self.dirty_cache.set((
-                buffer.revision(),
-                buffer.text() != self.baseline_normalized.as_str(),
-            ));
-        }
-        self.dirty_cache.get().1
-    }
-    fn disk_text(&self, cx: &App) -> String {
-        opalglass::document::LineEnding::detect(&self.baseline)
-            .encode(self.editor.read(cx).buffer.text())
-    }
-}
-
-impl Drop for Tab {
-    fn drop(&mut self) {
-        self.prepare_cancelled.store(true, Ordering::Relaxed);
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum Modal {
     None,
@@ -292,6 +162,8 @@ pub struct Workspace {
     outline_scroll: UniformListScrollHandle,
     sidebar: Entity<Sidebar>,
     preview_pane: Entity<PreviewPane>,
+    remote_images: Entity<remote_images::Cache>,
+    embedded_documents: Entity<embedded_documents::Cache>,
     preview_revision: Option<(EntityId, u64, u64, bool)>,
     connections: Entity<Connections>,
     connections_revision: Option<(EntityId, u64, u64, bool, bool)>,
@@ -364,231 +236,7 @@ impl Drop for Workspace {
     }
 }
 
-fn external_link(target: &str) -> bool {
-    target.starts_with("https://") || target.starts_with("http://") || target.starts_with("mailto:")
-}
-
 impl Workspace {
-    pub fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state_directory = if cfg!(test) {
-            None
-        } else {
-            navigation::state_directory()
-        };
-        let preferences = state_directory
-            .as_deref()
-            .map(opalglass::state::Preferences::load)
-            .unwrap_or_default();
-        let search = cx.new(|cx| Editor::new("", true, "Search notes…", cx));
-        let input = cx.new(|cx| Editor::new("", true, "", cx));
-        let find_input = cx.new(|cx| Editor::new("", true, "Find in note…", cx));
-        let owner = cx.entity().downgrade();
-        let sidebar = cx.new(|_| Sidebar {
-            #[cfg(test)]
-            render_count: 0,
-            owner: owner.clone(),
-        });
-        let preview_pane = cx.new(|_| PreviewPane {
-            pending_sync: None,
-            #[cfg(test)]
-            render_count: 0,
-            owner: owner.clone(),
-        });
-        let connections = cx.new(|_| Connections {
-            #[cfg(test)]
-            render_count: 0,
-            owner,
-            items: Arc::new(Vec::new()),
-            backlinks: 0,
-            tags: 0,
-            empty_message: "No incoming links yet",
-            scroll: UniformListScrollHandle::new(),
-        });
-        let subscriptions = vec![
-            cx.observe(&search, |_, _, cx| cx.notify()),
-            cx.observe(&input, |_, _, cx| cx.notify()),
-            cx.observe(&find_input, |_, _, cx| cx.notify()),
-            cx.observe(&cx.entity(), |this, _, cx| {
-                // Invalidate cached children before GPUI starts the next frame.
-                this.update_indexing(cx);
-                this.update_link_styles(cx);
-                this.sync_auto_reveal();
-                this.update_panes(cx);
-                this.sidebar.update(cx, |_, cx| cx.notify());
-            }),
-        ];
-        let watch = cx.spawn(async |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
-                let Ok(scan) = this.update(cx, |this, cx| {
-                    this.persist_navigation(cx);
-                    this.checkpoint(cx);
-                    (!this.managing && !this.loading && !this.indexing && !this.checkpointing)
-                        .then(|| this.vault.as_ref().map(|v| (v.clone(), this.revision)))
-                        .flatten()
-                }) else {
-                    break;
-                };
-                let Some((mut vault, revision)) = scan else {
-                    continue;
-                };
-                let result = cx
-                    .background_executor()
-                    .spawn(async move { vault.refresh().map(|changed| changed.then_some(vault)) })
-                    .await;
-                if this
-                    .update(cx, |this, cx| {
-                        if this.revision != revision {
-                            return;
-                        }
-                        match result {
-                            Ok(Some(vault)) => this.apply_scan(vault, revision, cx),
-                            Ok(None) => (),
-                            Err(error) => {
-                                this.status = format!("Could not refresh vault: {error}");
-                                this.error = true;
-                                cx.notify();
-                            }
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let mut workspace = Self {
-            vault: None,
-            tabs: Vec::new(),
-            history_back: Vec::new(),
-            history_forward: Vec::new(),
-            history_restore: None,
-            history_request: false,
-            active: 0,
-            focus: cx.focus_handle(),
-            search,
-            completion: LinkCompletion::default(),
-            find: NoteFind {
-                input: find_input,
-                open: false,
-                case_sensitive: false,
-                key: None,
-                matches: Arc::new(Vec::new()),
-                selected: None,
-                generation: 0,
-                task: None,
-                searching: false,
-            },
-            input,
-            modal: Modal::None,
-            inline_parent: None,
-            explorer_menu: None,
-            sort_menu: None,
-            sort_selected: 0,
-            auto_revealed: None,
-            move_candidates: Vec::new(),
-            move_results: Vec::new(),
-            move_query: String::new(),
-            move_selected: 0,
-            move_scroll: UniformListScrollHandle::new(),
-            tab_drop: None,
-            tabs_scroll: ScrollHandle::new(),
-            mode: ViewMode::Split,
-            preferences: preferences.clone(),
-            settings_open: false,
-            properties_panel: None,
-            history_panel: None,
-            _history: None,
-            comparison: None,
-            _comparison: None,
-            mentions: None,
-            _mentions: None,
-            replace_panel: None,
-            _replace: None,
-            picker: None,
-            picker_query: None,
-            picker_selected: 0,
-            picker_items: Vec::new(),
-            picker_scroll: UniformListScrollHandle::new(),
-            outline_open: false,
-            outline_scroll: UniformListScrollHandle::new(),
-            sidebar,
-            preview_pane,
-            preview_revision: None,
-            connections,
-            connections_revision: None,
-            #[cfg(debug_assertions)]
-            performance: cx.new(|_| PerformanceBar::default()),
-            indexing_bar: cx.new(|_| IndexingBar::default()),
-            _index_progress: None,
-            status: "Your notes, on your disk.".into(),
-            error: false,
-            revision: 0,
-            load_generation: 0,
-            loading: false,
-            _load: None,
-            load_cancelled: Arc::new(AtomicBool::new(false)),
-            indexing: false,
-            index_revision: u64::MAX,
-            index_cancelled: Arc::new(AtomicBool::new(false)),
-            _index: None,
-            search_query: String::new(),
-            search_revision: u64::MAX,
-            search_results: Vec::new(),
-            search_index: None,
-            search_engine: None,
-            search_error: None,
-            search_selected: 0,
-            snippet_cache: Arc::new(Mutex::new(Snippets::default())),
-            _snippet_task: None,
-            snippets_loading: false,
-            snippet_requests: Vec::new(),
-            searching: false,
-            open_search_result: false,
-            _search_task: None,
-            search_cancelled: Arc::new(AtomicBool::new(false)),
-            notes_scroll: UniformListScrollHandle::new(),
-            results_scroll: UniformListScrollHandle::new(),
-            tree: Tree::default(),
-            navigation: NavigationState::default(),
-            tree_revision: u64::MAX,
-            tree_focus: cx.focus_handle(),
-            resizing_sidebar: false,
-            split_ratio: 0.5,
-            scroll_locked: false,
-            live_preview: preferences.default_live_preview,
-            split_bounds: Rc::new(Cell::new(Bounds::default())),
-            split_drag_offset: None,
-            typeahead: String::new(),
-            typeahead_at: std::time::Instant::now(),
-            state_directory,
-            persisted_navigation: None,
-            modal_target: None,
-            managing: false,
-            _management: None,
-            note_generation: 0,
-            _note_load: None,
-            note_loading: false,
-            _restore: None,
-            checkpointing: false,
-            checkpoints: Default::default(),
-            _checkpoint: None,
-            restoring: false,
-            _subscriptions: subscriptions,
-            _watch: watch,
-        };
-        workspace.focus.focus(window);
-        let path = path.or_else(|| {
-            workspace
-                .state_directory
-                .as_ref()
-                .and_then(|dir| opalglass::state::last_vault(dir))
-        });
-        if let Some(path) = path {
-            workspace.open_vault(path, window, cx);
-        }
-        workspace
-    }
     fn message(&mut self, text: impl Into<String>, error: bool, cx: &mut Context<Self>) {
         self.status = text.into();
         self.error = error;
@@ -662,6 +310,8 @@ mod file_actions;
 mod find;
 #[path = "workspace/history.rs"]
 mod history;
+#[path = "workspace/images.rs"]
+mod images;
 #[path = "workspace/keyboard.rs"]
 mod keyboard;
 #[path = "workspace/layout.rs"]
@@ -698,3 +348,48 @@ use panes::*;
 use properties::*;
 use replace::*;
 use status::*;
+
+#[path = "workspace/tab.rs"]
+mod tab;
+use tab::Tab;
+#[path = "workspace/link_styles.rs"]
+mod link_styles;
+
+#[path = "workspace/inline_text.rs"]
+mod inline_text;
+
+#[path = "workspace/tables.rs"]
+mod tables;
+
+#[path = "workspace/remote_image_view.rs"]
+mod remote_image_view;
+#[path = "workspace/remote_images.rs"]
+mod remote_images;
+
+#[path = "workspace/initialization.rs"]
+mod initialization;
+
+#[path = "workspace/compose_embeds.rs"]
+mod compose_embeds;
+#[path = "workspace/compose_selection.rs"]
+mod compose_selection;
+#[path = "workspace/embedded_documents.rs"]
+mod embedded_documents;
+#[path = "workspace/embedded_runtime.rs"]
+mod embedded_runtime;
+#[path = "workspace/embedded_view.rs"]
+mod embedded_view;
+#[path = "workspace/reading_actions.rs"]
+mod reading_actions;
+#[path = "workspace/reading_blocks.rs"]
+mod reading_blocks;
+#[path = "workspace/reading_composition.rs"]
+mod reading_composition;
+#[path = "workspace/reading_context.rs"]
+mod reading_context;
+#[path = "workspace/reading_footnotes.rs"]
+mod reading_footnotes;
+#[path = "workspace/reading_projection.rs"]
+mod reading_projection;
+#[path = "workspace/visible_leases.rs"]
+mod visible_leases;
