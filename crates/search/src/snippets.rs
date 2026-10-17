@@ -33,22 +33,20 @@ impl FileVersion {
         Self::metadata(&fs::metadata(path)?)
     }
     pub(crate) fn metadata(meta: &fs::Metadata) -> Result<Self> {
-        let mut version = Self {
-            len: meta.len(),
-            modified: meta
-                .modified()?
-                .duration_since(UNIX_EPOCH)?
-                .as_nanos()
-                .to_string(),
-        };
+        let modified = meta
+            .modified()?
+            .duration_since(UNIX_EPOCH)?
+            .as_nanos()
+            .to_string();
         #[cfg(unix)]
-        {
+        let modified = {
             use std::os::unix::fs::MetadataExt;
-            version
-                .modified
-                .push_str(&format!(":{}:{}", meta.ctime(), meta.ctime_nsec()));
-        }
-        Ok(version)
+            format!("{modified}:{}:{}", meta.ctime(), meta.ctime_nsec())
+        };
+        Ok(Self {
+            len: meta.len(),
+            modified,
+        })
     }
     pub(crate) fn indexed(engine: &Engine, hit: &Hit) -> Result<Self> {
         Ok(Self {

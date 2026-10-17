@@ -1,5 +1,7 @@
 use super::*;
 
+mod filesystem;
+
 #[test]
 fn moves_preserve_markdown_references_images_and_wiki_embeds_without_reformatting() {
     let dir = tempfile::tempdir().unwrap();
@@ -90,30 +92,6 @@ fn trash_preserves_folders_attachments_links_and_restores_without_overwrite() {
         assert!(vault.trash_entry(Path::new(invalid)).is_err());
     }
 }
-#[cfg(unix)]
-#[test]
-fn trash_rejects_symlinks_and_malicious_restore_records() {
-    use std::os::unix::fs::symlink;
-    let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("A.md"), "note").unwrap();
-    symlink(outside.path(), dir.path().join(".trash")).unwrap();
-    let mut vault = Vault::open(dir.path()).unwrap();
-    assert!(vault.trash_entry(Path::new("A.md")).is_err());
-    assert!(dir.path().join("A.md").exists());
-    fs::remove_file(dir.path().join(".trash")).unwrap();
-    vault.trash_entry(Path::new("A.md")).unwrap();
-    let entry = fs::read_dir(dir.path().join(".trash"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(entry.join("original.json"), "\"../outside.md\"").unwrap();
-    assert!(vault.restore_last_trashed().is_err());
-    assert!(entry.join("content").exists());
-}
-
 #[test]
 fn updating_existing_note_changes_only_its_backlinks_and_preserves_snapshots() {
     let dir = tempfile::tempdir().unwrap();
@@ -327,18 +305,6 @@ fn failed_rename_rolls_back_link_writes_and_never_clobbers_destination() {
     assert_eq!(vault.read(Path::new("Existing.md")).unwrap(), "destination");
 }
 #[test]
-fn rename_supports_case_changes_and_updates_links() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("Note.md"), "").unwrap();
-    fs::write(dir.path().join("Index.md"), "[[Note]]").unwrap();
-    let mut vault = Vault::open(dir.path()).unwrap();
-    vault
-        .move_entry(Path::new("Note.md"), Path::new("note.md"))
-        .unwrap();
-    assert_eq!(vault.read(Path::new("Index.md")).unwrap(), "[[note]]");
-    assert!(!dir.path().join("Note.md").exists());
-}
-#[test]
 fn move_folder_preserves_incoming_outgoing_aliases_headings_and_line_endings() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Old/Empty")).unwrap();
@@ -446,55 +412,6 @@ fn folder_actions_reject_collisions_escapes_and_recursive_moves_without_changes(
     assert!(vault.refresh().unwrap());
     assert!(!vault.folders.contains(&PathBuf::from("External")));
 }
-#[cfg(unix)]
-#[test]
-fn moves_and_new_folders_reject_symlink_ancestors() {
-    let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("Note.md"), "note").unwrap();
-    std::os::unix::fs::symlink(outside.path(), dir.path().join("Link")).unwrap();
-    let mut vault = Vault::open(dir.path()).unwrap();
-    assert!(vault.create_folder("Link/Folder").is_err());
-    assert!(
-        vault
-            .move_entry(Path::new("Note.md"), Path::new("Link/Note.md"))
-            .is_err()
-    );
-    assert!(
-        vault
-            .move_entry(Path::new("Link"), Path::new("Moved"))
-            .is_err()
-    );
-    assert!(dir.path().join("Note.md").is_file());
-    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-}
-#[test]
-fn refresh_reuses_unchanged_notes_and_updates_search_and_links() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("Source.md"), "[[Target]] [[Target]]").unwrap();
-    fs::write(temp.path().join("Target.md"), "old body").unwrap();
-    let mut vault = Vault::open(temp.path()).unwrap();
-    let snapshot = vault.clone();
-    assert!(!vault.refresh().unwrap());
-    assert!(Arc::ptr_eq(&vault.notes, &snapshot.notes));
-    assert_eq!(vault.backlinks(Path::new("Target.md")).len(), 1);
-
-    let target = temp.path().join("Target.md");
-    fs::write(&target, "new body with more text").unwrap();
-    assert!(vault.refresh().unwrap());
-    assert!(Arc::ptr_eq(&vault.notes[0], &snapshot.notes[0]));
-    assert!(!Arc::ptr_eq(&vault.notes[1], &snapshot.notes[1]));
-    assert!(vault.notes[1].matches_text("new body with more text"));
-    assert!(snapshot.notes[1].matches_text("old body"));
-    assert!(!snapshot.notes[1].matches_text("new body with more text"));
-    assert!(!vault.refresh().unwrap());
-
-    fs::remove_file(temp.path().join("Source.md")).unwrap();
-    assert!(vault.refresh().unwrap());
-    assert!(vault.backlinks(Path::new("Target.md")).is_empty());
-    assert!(vault.search("Source").is_empty());
-}
-
 #[test]
 fn title_index_tracks_ambiguity_and_local_saves_update_backlinks() {
     let temp = tempfile::tempdir().unwrap();
@@ -514,26 +431,6 @@ fn title_index_tracks_ambiguity_and_local_saves_update_backlinks() {
     fs::remove_file(temp.path().join(other)).unwrap();
     assert!(vault.refresh().unwrap());
     assert_eq!(vault.resolve(&source, "Target"), Some(target));
-}
-
-#[cfg(unix)]
-#[test]
-fn refresh_detects_same_length_rewrites_with_restored_mtime() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("Note.md");
-    fs::write(&path, "before").unwrap();
-    let modified = fs::metadata(&path).unwrap().modified().unwrap();
-    let mut vault = Vault::open(temp.path()).unwrap();
-    fs::write(&path, "after!").unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(modified)
-        .unwrap();
-    assert!(vault.refresh().unwrap());
-    assert!(vault.notes[0].matches_text("after!"));
-    assert!(!vault.notes[0].matches_text("before"));
 }
 
 #[test]
@@ -570,27 +467,6 @@ fn create_save_reopen_and_conflict_preserves_disk() {
     assert!(v.create("ideas/hello", "case overwrite").is_err());
 }
 #[test]
-fn filenames_are_portable_and_confined() {
-    for name in [
-        "",
-        "../escape",
-        "/absolute",
-        "a/../../b",
-        "a\\b",
-        "CON.md",
-        "NUL",
-        ".hidden",
-        "a:",
-        "foo.",
-    ] {
-        assert!(Vault::note_path(name).is_err(), "{name}");
-    }
-    assert_eq!(
-        Vault::note_path("Ideas/İstanbul").unwrap(),
-        PathBuf::from("Ideas/İstanbul.md")
-    );
-}
-#[test]
 fn links_resolve_relative_and_ambiguous_titles_stay_unresolved() {
     let temp = tempfile::tempdir().unwrap();
     let mut v = Vault::open(temp.path()).unwrap();
@@ -602,14 +478,4 @@ fn links_resolve_relative_and_ambiguous_titles_stay_unresolved() {
     assert_eq!(v.backlinks(&b)[0].path, a);
     assert!(v.search("heading").is_empty());
     assert_eq!(v.backlinks(&b)[0].links[0].target, "Other#Heading");
-}
-#[cfg(unix)]
-#[test]
-fn symlinks_cannot_escape_vault() {
-    let temp = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(outside.path(), temp.path().join("link")).unwrap();
-    let mut v = Vault::open(temp.path()).unwrap();
-    assert!(v.create("link/escape", "no").is_err());
-    assert!(!outside.path().join("escape.md").exists());
 }
