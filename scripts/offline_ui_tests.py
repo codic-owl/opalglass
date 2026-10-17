@@ -6,6 +6,7 @@ Rust source files and the committed UI lockfile are untouched. The normal CI
 harness uses the unmodified upstream manifest.
 """
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -95,9 +96,10 @@ for name, items in harness_manifest.items():
 shutil.copy2(root / "ui-tests/Cargo.lock", harness / "Cargo.lock")
 
 print("Testing unchanged GPUI source with util/test-support omitted from its temporary manifest.", flush=True)
+test_environment = dict(os.environ, RUST_TEST_THREADS="1")
 subprocess.run([
     "cargo", "test", "--offline", "--manifest-path", str(harness / "Cargo.toml"),
     "--target-dir", str(root / "ui-tests/target"),
     "--config", 'patch."https://github.com/zed-industries/zed".gpui.path=' + json.dumps(str(destination)),
     *sys.argv[1:],
-], cwd=root, check=True)
+], cwd=root, env=test_environment, check=True)
