@@ -37,10 +37,7 @@ fn legacy(path: &Path) -> Location {
 }
 
 fn validate_path(path: &Path) -> io::Result<()> {
-    if crate::vault::Vault::folder_path(&path.to_string_lossy())? != path {
-        return Err(invalid("Invalid history path"));
-    }
-    Ok(())
+    crate::vault::Vault::validate_entry_path(path)
 }
 
 fn validate(routes: &Routes) -> io::Result<()> {

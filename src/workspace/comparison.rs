@@ -130,7 +130,8 @@ impl Workspace {
                     // Refresh removes the stale inventory entry; create then
                     // uses no-clobber publication if another app recreates it.
                     vault.refresh().map_err(|e| e.to_string())?;
-                    vault.create(&read_path.to_string_lossy(), &ours).map_err(|e| e.to_string())?;
+                    let name = Vault::path_name(&read_path).map_err(|e| e.to_string())?;
+                    vault.create(&name, &ours).map_err(|e| e.to_string())?;
                     return Ok((vault, ours));
                 }
                 if vault.read(&read_path).map_err(|e| e.to_string())? != disk {

@@ -195,8 +195,12 @@ mod tests {
     #[test]
     fn reads_are_bounded_cancelled_and_utf8_checked() {
         let folder = tempfile::tempdir().unwrap();
-        let path = folder.path().join("A.md");
-        for bytes in [vec![b'x'; MAX_FILE_BYTES + 1], vec![0xff]] {
+        // Match Vault::open: macOS temporary roots can contain a /var symlink.
+        let path = folder.path().canonicalize().unwrap().join("A.md");
+        for (bytes, expected) in [
+            (vec![b'x'; MAX_FILE_BYTES + 1], super::SOURCE_TOO_LARGE),
+            (vec![0xff], "The embedded note is not valid UTF-8."),
+        ] {
             fs::write(&path, bytes).unwrap();
             let input = super::Input {
                 path: "A.md".into(),
@@ -204,8 +208,11 @@ mod tests {
                 token: SourceToken::saved_fixture(1),
                 open: None,
             };
-            assert!(
-                futures::executor::block_on(load(input, Arc::new(AtomicBool::new(false)))).is_err()
+            assert_eq!(
+                futures::executor::block_on(load(input, Arc::new(AtomicBool::new(false))))
+                    .err()
+                    .as_deref(),
+                Some(expected)
             );
         }
         fs::write(&path, "valid").unwrap();
@@ -215,12 +222,17 @@ mod tests {
             token: SourceToken::saved_fixture(1),
             open: None,
         };
-        assert!(futures::executor::block_on(load(input, Arc::new(AtomicBool::new(true)))).is_err());
+        assert_eq!(
+            futures::executor::block_on(load(input, Arc::new(AtomicBool::new(true))))
+                .err()
+                .as_deref(),
+            Some("Embedded note loading cancelled")
+        );
     }
     #[test]
     fn saved_crlf_snapshots_share_editor_normalization_and_anchor_offsets() {
         let folder = tempfile::tempdir().unwrap();
-        let path = folder.path().join("A.md");
+        let path = folder.path().canonicalize().unwrap().join("A.md");
         let raw = "# Heading\r\n\r\nText é[^n] ^block\r\n\r\n[^n]: Footnote\r\n";
         fs::write(&path, raw).unwrap();
         let input = super::Input {

@@ -131,6 +131,58 @@ fn filenames_are_portable_and_confined() {
     );
 }
 
+#[test]
+fn native_nested_paths_preserve_history_across_moves_and_trash_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut vault = Vault::open(dir.path()).unwrap();
+    let source = Path::new("Projects").join("Source.md");
+    let destination = Path::new("Archive").join("Moved.md");
+    assert_eq!(vault.create("Projects/Source", "original").unwrap(), source);
+    vault.save(&source, "original", "edited").unwrap();
+    vault.create_folder("Archive").unwrap();
+    vault.move_entry(&source, &destination).unwrap();
+
+    // Stored origins are deserialized with native separators on Windows. Reading
+    // routes after reopening exercises that validation as well as the move itself.
+    let mut reopened = Vault::open(dir.path()).unwrap();
+    assert_eq!(reopened.read(&destination).unwrap(), "edited");
+    let versions = crate::history::versions(dir.path(), &destination).unwrap();
+    assert_eq!(versions.len(), 1);
+    assert_eq!(
+        crate::history::read(dir.path(), &destination, &versions[0].id).unwrap(),
+        "original"
+    );
+    reopened.trash_entry(&destination).unwrap();
+    assert!(!dir.path().join(&destination).exists());
+    assert_eq!(reopened.restore_last_trashed().unwrap(), destination);
+    assert_eq!(reopened.read(&destination).unwrap(), "edited");
+}
+
+#[test]
+fn native_path_validation_preserves_confinement_and_portable_names() {
+    let nested = Path::new("Projects").join("İstanbul.md");
+    Vault::validate_entry_path(&nested).unwrap();
+    assert_eq!(Vault::path_name(&nested).unwrap(), "Projects/İstanbul.md");
+    #[cfg(unix)]
+    assert!(Vault::path_name(Path::new(r"Projects\İstanbul.md")).is_err());
+    for invalid in [
+        PathBuf::new(),
+        PathBuf::from("/absolute"),
+        Path::new("Projects").join("..").join("Outside.md"),
+        Path::new("Projects").join("CON.md"),
+        Path::new("Projects").join("trailing."),
+        Path::new("Projects").join(".hidden"),
+        PathBuf::from(r"C:\Outside.md"),
+        PathBuf::from(r"\\server\share\Outside.md"),
+        PathBuf::from(r"\\?\C:\Outside.md"),
+    ] {
+        assert!(Vault::path_name(&invalid).is_err(), "{}", invalid.display());
+    }
+    // User-entered names retain forward-slash syntax on every platform.
+    assert!(Vault::folder_path(r"Projects\New folder").is_err());
+    assert!(Vault::note_path(r"Projects\New note").is_err());
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinks_cannot_escape_vault() {

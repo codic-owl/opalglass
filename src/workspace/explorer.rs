@@ -472,7 +472,13 @@ impl Workspace {
                                 .id(("note", index))
                                 .debug_selector({
                                     let path = path.clone();
-                                    move || format!("entry:{}", path.display())
+                                    move || {
+                                        format!(
+                                            "entry:{}",
+                                            path.to_string_lossy()
+                                                .replace(std::path::MAIN_SEPARATOR, "/")
+                                        )
+                                    }
                                 })
                                 .h(px(if searching { 98. } else { 32. }))
                                 .pl(px(8. + depth as f32 * 16.))

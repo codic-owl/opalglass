@@ -6,7 +6,8 @@ fn attachment_paste_at_start_preserves_frontmatter_and_deleted_note_can_be_resto
 ) {
     let folder = tempfile::tempdir().unwrap();
     let source = "---\ntags: [work]\n---\nBody\n";
-    let path = folder.path().join("A.md");
+    let path = folder.path().join("Nested").join("A.md");
+    std::fs::create_dir(path.parent().unwrap()).unwrap();
     std::fs::write(&path, source).unwrap();
     let (view, cx) = cx.add_window_view(|w, cx| Workspace::new(Some(folder.path().into()), w, cx));
     cx.run_until_parked();

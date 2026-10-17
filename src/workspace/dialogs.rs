@@ -41,7 +41,13 @@ impl Workspace {
             if folder.as_os_str().is_empty() {
                 String::new()
             } else {
-                format!("{}/", folder.display())
+                match Vault::path_name(&folder) {
+                    Ok(name) => format!("{name}/"),
+                    Err(error) => {
+                        self.message(format!("Cannot create here: {error}"), true, cx);
+                        return;
+                    }
+                }
             }
         } else if modal == Modal::Rename {
             self.modal_target
@@ -64,14 +70,17 @@ impl Workspace {
             self.move_scroll = UniformListScrollHandle::new();
             String::new()
         } else if modal == Modal::Copy {
-            format!(
-                "{} copy",
-                self.tabs[self.active]
-                    .path
-                    .with_extension("")
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            )
+            let name = match Vault::path_name(&self.tabs[self.active].path) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.message(format!("Cannot copy this note: {error}"), true, cx);
+                    return;
+                }
+            };
+            let stem = name
+                .rsplit_once('.')
+                .map_or(name.as_str(), |(stem, _)| stem);
+            format!("{stem} copy")
         } else {
             String::new()
         };
@@ -117,13 +126,21 @@ impl Workspace {
                 self.message("Enter a name", true, cx);
                 return;
             }
-            input = self
-                .inline_parent
-                .as_ref()
-                .unwrap()
-                .join(input)
-                .to_string_lossy()
-                .into_owned();
+            let name = match Vault::folder_path(&input) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.message(error.to_string(), true, cx);
+                    return;
+                }
+            };
+            let path = self.inline_parent.as_ref().unwrap().join(name);
+            input = match Vault::path_name(&path) {
+                Ok(name) => name,
+                Err(error) => {
+                    self.message(error.to_string(), true, cx);
+                    return;
+                }
+            };
         }
         match self.modal {
             Modal::OpenPath => self.open_vault(PathBuf::from(input), window, cx),

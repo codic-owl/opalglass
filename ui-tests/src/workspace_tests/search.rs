@@ -164,7 +164,10 @@ fn indexing_restarts_after_save_and_is_cancelled_on_vault_switch(cx: &mut TestAp
     cx.run_until_parked();
     assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
     view.read_with(cx, |this, _| {
-        assert_eq!(this.vault.as_ref().unwrap().root, other.path());
+        assert_eq!(
+            this.vault.as_ref().unwrap().root,
+            other.path().canonicalize().unwrap()
+        );
         assert_eq!(this.tabs[0].path, PathBuf::from("Other.md"));
         assert!(this.vault.as_ref().unwrap().content_indexed());
     });

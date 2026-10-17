@@ -110,7 +110,9 @@ fn capture_prunes_only_its_selected_identity_after_a_move_and_old_name_reuse() {
     // enumerating the reused path would delete the moved note's only snapshot.
     let reused = location(root, Path::new("A.md")).unwrap();
     let folder = directory(root, &["notes", &reused.key], false).unwrap();
-    fs::File::open(folder.join(format!("{}.json", hash("older A"))))
+    fs::File::options()
+        .write(true)
+        .open(folder.join(format!("{}.json", hash("older A"))))
         .unwrap()
         .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
         .unwrap();
