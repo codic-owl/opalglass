@@ -9,8 +9,8 @@
         "Per-row 24 px gutters, centered 760 px maximum column, consistent typography and surface in Reading and Split"
       ],
       "evidence": [
-        "workspace::tests::reading_gutters_survive_narrow_split_panes_and_scrolling",
-        "workspace::tests::reading_column_and_complete_code_clipboard"
+        "workspace::tests::rendering::reading_gutters_survive_narrow_split_panes_and_scrolling",
+        "workspace::tests::rendering::reading_column_and_complete_code_clipboard"
       ],
       "limits": [
         "Native screenshots cover representative fixtures, not every theme or DPI."
@@ -55,11 +55,11 @@
         "rendering::tests",
         "prepared::tests",
         "footnotes::tests",
-        "workspace::tests::reading_footnotes_reorder_navigate_and_return_without_opening_notes",
-        "workspace::tests::custom_reading_tasks_preserve_unicode_markers_on_undo",
+        "workspace::tests::rendering::reading_footnotes_reorder_navigate_and_return_without_opening_notes",
+        "workspace::tests::rendering::custom_reading_tasks_preserve_unicode_markers_on_undo",
         "syntax::tests",
         "examples/syntax_benchmark.rs",
-        "workspace::tests::syntax_colors_arrive_after_first_paint_and_refresh_after_edits"
+        "workspace::tests::rendering::syntax_colors_arrive_after_first_paint_and_refresh_after_edits"
       ],
       "limits": [
         "See all missing/partial families in the coverage inventory. In particular superscript/Live Preview footnotes, exhaustive syntax-language coverage, math, Mermaid, HTML, transclusion and media are incomplete or absent.",
@@ -94,7 +94,7 @@
       "evidence": [
         "changes::tests",
         "history::tests",
-        "workspace::tests::workspace_replace_requires_current_preview_checks_all_files_and_respects_selection"
+        "workspace::tests::workflows::workspace_replace_requires_current_preview_checks_all_files_and_respects_selection"
       ],
       "limits": [
         "Batch journals are not automatically pruned."

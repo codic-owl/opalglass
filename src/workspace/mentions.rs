@@ -1,11 +1,14 @@
-struct MentionsPanel {
-    root: PathBuf,
-    target: PathBuf,
-    items: Arc<Vec<opalglass::changes::Mention>>,
-    loading: bool,
-    error: Option<String>,
-    scroll: UniformListScrollHandle,
-    cancelled: Arc<AtomicBool>,
+// Mentions workflow and controls.
+use super::*;
+
+pub(super) struct MentionsPanel {
+    pub(super) root: PathBuf,
+    pub(super) target: PathBuf,
+    pub(super) items: Arc<Vec<opalglass::changes::Mention>>,
+    pub(super) loading: bool,
+    pub(super) error: Option<String>,
+    pub(super) scroll: UniformListScrollHandle,
+    pub(super) cancelled: Arc<AtomicBool>,
 }
 impl Drop for MentionsPanel {
     fn drop(&mut self) {
@@ -13,7 +16,7 @@ impl Drop for MentionsPanel {
     }
 }
 impl Workspace {
-    fn open_mentions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_mentions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.managing {
             return;
         }
@@ -56,7 +59,12 @@ impl Workspace {
             });
         }));
     }
-    fn link_mention(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn link_mention(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.managing || self.checkpointing {
             return;
         }
@@ -111,7 +119,7 @@ impl Workspace {
             });
         }));
     }
-    fn render_mentions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_mentions(&self, cx: &mut Context<Self>) -> AnyElement {
         let panel = self.mentions.as_ref().unwrap();
         div()
             .absolute()

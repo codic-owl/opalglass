@@ -1,18 +1,21 @@
-struct ReplacePanel {
-    root: PathBuf,
-    find: Entity<Editor>,
-    replacement: Entity<Editor>,
-    case_sensitive: bool,
-    plans: Arc<Vec<opalglass::changes::NoteChanges>>,
-    selected: std::collections::BTreeSet<usize>,
-    active: usize,
-    preview_key: Option<(String, String, bool)>,
-    loading: bool,
-    message: Option<String>,
-    notes_scroll: UniformListScrollHandle,
-    diff_scroll: UniformListScrollHandle,
-    cancelled: Arc<AtomicBool>,
-    _subscriptions: Vec<Subscription>,
+// Replace workflow and controls.
+use super::*;
+
+pub(super) struct ReplacePanel {
+    pub(super) root: PathBuf,
+    pub(super) find: Entity<Editor>,
+    pub(super) replacement: Entity<Editor>,
+    pub(super) case_sensitive: bool,
+    pub(super) plans: Arc<Vec<opalglass::changes::NoteChanges>>,
+    pub(super) selected: std::collections::BTreeSet<usize>,
+    pub(super) active: usize,
+    pub(super) preview_key: Option<(String, String, bool)>,
+    pub(super) loading: bool,
+    pub(super) message: Option<String>,
+    pub(super) notes_scroll: UniformListScrollHandle,
+    pub(super) diff_scroll: UniformListScrollHandle,
+    pub(super) cancelled: Arc<AtomicBool>,
+    pub(super) _subscriptions: Vec<Subscription>,
 }
 impl Drop for ReplacePanel {
     fn drop(&mut self) {
@@ -20,19 +23,19 @@ impl Drop for ReplacePanel {
     }
 }
 impl ReplacePanel {
-    fn key(&self, cx: &App) -> (String, String, bool) {
+    pub(super) fn key(&self, cx: &App) -> (String, String, bool) {
         (
             self.find.read(cx).buffer.text().into(),
             self.replacement.read(cx).buffer.text().into(),
             self.case_sensitive,
         )
     }
-    fn ready(&self, cx: &App) -> bool {
+    pub(super) fn ready(&self, cx: &App) -> bool {
         !self.loading && self.preview_key.as_ref() == Some(&self.key(cx))
     }
 }
 impl Workspace {
-    fn open_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.managing {
             return;
         }
@@ -66,7 +69,7 @@ impl Workspace {
         });
         cx.notify();
     }
-    fn preview_replace(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn preview_replace(&mut self, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.replace_panel else {
             return;
         };
@@ -122,7 +125,7 @@ impl Workspace {
             });
         }));
     }
-    fn apply_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.managing || self.checkpointing {
             return;
         }
@@ -184,7 +187,7 @@ impl Workspace {
             });
         }));
     }
-    fn render_replace(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_replace(&self, cx: &mut Context<Self>) -> AnyElement {
         let panel = self.replace_panel.as_ref().unwrap();
         let matches: usize = panel
             .selected

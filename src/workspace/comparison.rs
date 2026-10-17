@@ -1,19 +1,22 @@
-struct ExternalComparison {
-    editor: Entity<Editor>,
-    revision: u64,
-    root: PathBuf,
-    path: PathBuf,
-    disk: String,
-    deleted: bool,
-    ours: String,
-    rows: Arc<Vec<opalglass::comparison::Row>>,
-    disk_changes: Arc<Vec<opalglass::comparison::Row>>,
-    show_disk_changes: bool,
-    scroll: UniformListScrollHandle,
-    error: Option<String>,
+// Comparison workflow and controls.
+use super::*;
+
+pub(super) struct ExternalComparison {
+    pub(super) editor: Entity<Editor>,
+    pub(super) revision: u64,
+    pub(super) root: PathBuf,
+    pub(super) path: PathBuf,
+    pub(super) disk: String,
+    pub(super) deleted: bool,
+    pub(super) ours: String,
+    pub(super) rows: Arc<Vec<opalglass::comparison::Row>>,
+    pub(super) disk_changes: Arc<Vec<opalglass::comparison::Row>>,
+    pub(super) show_disk_changes: bool,
+    pub(super) scroll: UniformListScrollHandle,
+    pub(super) error: Option<String>,
 }
 impl Workspace {
-    fn open_comparison(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_comparison(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.managing || self.checkpointing {
             return;
         }
@@ -82,7 +85,12 @@ impl Workspace {
             });
         }));
     }
-    fn resolve_comparison(&mut self, use_disk: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn resolve_comparison(
+        &mut self,
+        use_disk: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.managing || self.checkpointing {
             return;
         }
@@ -169,7 +177,7 @@ impl Workspace {
             });
         }));
     }
-    fn render_comparison(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_comparison(&self, cx: &mut Context<Self>) -> AnyElement {
         let panel = self.comparison.as_ref().unwrap();
         let rows = if panel.show_disk_changes {
             panel.disk_changes.clone()

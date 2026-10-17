@@ -1,21 +1,27 @@
+// Properties workflow and controls.
+use super::*;
+
 // Included in workspace.rs so properties use the same editor/undo/save workflow.
 use opalglass::properties::yaml as property_yaml;
-struct PropertyInput {
-    key: Entity<Editor>,
-    value: Entity<Editor>,
+pub(super) struct PropertyInput {
+    pub(super) key: Entity<Editor>,
+    pub(super) value: Entity<Editor>,
 }
-struct PropertiesPanel {
-    editor: Entity<Editor>,
-    revision: u64,
-    original: Arc<String>,
-    source: Arc<String>,
-    rows: Vec<PropertyInput>,
-    yaml: Entity<Editor>,
-    raw: bool,
-    error: Option<String>,
+pub(super) struct PropertiesPanel {
+    pub(super) editor: Entity<Editor>,
+    pub(super) revision: u64,
+    pub(super) original: Arc<String>,
+    pub(super) source: Arc<String>,
+    pub(super) rows: Vec<PropertyInput>,
+    pub(super) yaml: Entity<Editor>,
+    pub(super) raw: bool,
+    pub(super) error: Option<String>,
 }
 impl PropertiesPanel {
-    fn rows(map: &property_yaml::Mapping, cx: &mut Context<Workspace>) -> Vec<PropertyInput> {
+    pub(super) fn rows(
+        map: &property_yaml::Mapping,
+        cx: &mut Context<Workspace>,
+    ) -> Vec<PropertyInput> {
         map.iter()
             .map(|(key, value)| PropertyInput {
                 key: cx.new(|cx| {
@@ -30,7 +36,7 @@ impl PropertiesPanel {
             })
             .collect()
     }
-    fn draft(&self, cx: &App) -> Result<String, String> {
+    pub(super) fn draft(&self, cx: &App) -> Result<String, String> {
         use opalglass::properties as p;
         if self.raw {
             let (range, replacement) =
@@ -67,7 +73,7 @@ impl PropertiesPanel {
     }
 }
 impl Workspace {
-    fn open_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.managing {
             return;
         }
@@ -104,7 +110,7 @@ impl Workspace {
         self.focus.focus(window);
         cx.notify();
     }
-    fn apply_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = &self.properties_panel else {
             return;
         };
@@ -147,7 +153,7 @@ impl Workspace {
             }
         }
     }
-    fn switch_properties_mode(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn switch_properties_mode(&mut self, cx: &mut Context<Self>) {
         let Some(panel) = &self.properties_panel else {
             return;
         };
@@ -177,7 +183,7 @@ impl Workspace {
         panel.error = None;
         cx.notify();
     }
-    fn render_properties(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_properties(&self, cx: &mut Context<Self>) -> AnyElement {
         let panel = self.properties_panel.as_ref().unwrap();
         let mut fields = div()
             .id("property-fields")

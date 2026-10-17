@@ -165,7 +165,9 @@ pub fn import(root: &Path, input: Input) -> io::Result<PathBuf> {
     }
     temp.as_file().sync_all()?;
     let names: std::collections::HashSet<_> = fs::read_dir(&directory)?
-        .filter_map(|e| e.ok())
+        // A partial inventory cannot establish portable, case-insensitive names.
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
         .map(|e| e.file_name().to_string_lossy().to_lowercase())
         .collect();
     for suffix in 0..10_000 {

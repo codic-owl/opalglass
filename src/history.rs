@@ -196,7 +196,10 @@ pub fn undo_latest(vault: &mut Vault) -> Result<usize, String> {
     })?;
     let mut files = fs::read_dir(folder)
         .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
+        // Do not restore an older batch after silently missing a newer record.
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json"))
         .collect::<Vec<_>>();

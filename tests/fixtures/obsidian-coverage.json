@@ -218,8 +218,8 @@
         "syntax::tests",
         "prepared::tests::code_colors_keep_exact_source_ranges_inside_containers_and_hidden_metadata",
         "prepared::tests::code_chunks_keep_multiline_color_and_complete_copy_text",
-        "workspace::tests::syntax_colors_arrive_after_first_paint_and_refresh_after_edits",
-        "workspace::tests::reading_column_and_complete_code_clipboard"
+        "workspace::tests::rendering::syntax_colors_arrive_after_first_paint_and_refresh_after_edits",
+        "workspace::tests::rendering::reading_column_and_complete_code_clipboard"
       ],
       "obsidian_evidence": {
         "mode": "Reading",
@@ -325,7 +325,7 @@
         "markdown::tests",
         "live::tests",
         "editing::tests::custom_task_toggle_and_continue_are_undoable",
-        "workspace::tests::custom_reading_tasks_preserve_unicode_markers_on_undo"
+        "workspace::tests::rendering::custom_reading_tasks_preserve_unicode_markers_on_undo"
       ],
       "obsidian_evidence": {
         "mode": "Reading",
@@ -388,7 +388,7 @@
       "fixture": "inline markdown in this record",
       "tests": [
         "footnotes::tests",
-        "workspace::tests::reading_footnotes_reorder_navigate_and_return_without_opening_notes"
+        "workspace::tests::rendering::reading_footnotes_reorder_navigate_and_return_without_opening_notes"
       ],
       "obsidian_evidence": {
         "mode": "Reading",
@@ -440,7 +440,7 @@
       "fixture": "inline markdown in this record",
       "tests": [
         "callouts::tests",
-        "workspace::tests::reading_callouts_fold_nested_rows_and_reveal_find_targets"
+        "workspace::tests::rendering::reading_callouts_fold_nested_rows_and_reveal_find_targets"
       ],
       "obsidian_evidence": {
         "mode": "Reading",

@@ -1,5 +1,8 @@
+// Attachments workflow and controls.
+use super::*;
+
 impl Workspace {
-    fn import_attachments(
+    pub(super) fn import_attachments(
         &mut self,
         editor: Entity<Editor>,
         inputs: Vec<opalglass::attachments::Input>,

@@ -1,19 +1,26 @@
-struct HistoryPanel {
-    root: PathBuf,
-    path: PathBuf,
-    editor: Entity<Editor>,
-    revision: u64,
-    versions: Vec<opalglass::history::Version>,
-    active: usize,
-    text: Option<String>,
-    rows: Arc<Vec<opalglass::comparison::Row>>,
-    scroll: UniformListScrollHandle,
-    error: Option<String>,
+// History workflow and controls.
+use super::*;
+
+pub(super) struct HistoryPanel {
+    pub(super) root: PathBuf,
+    pub(super) path: PathBuf,
+    pub(super) editor: Entity<Editor>,
+    pub(super) revision: u64,
+    pub(super) versions: Vec<opalglass::history::Version>,
+    pub(super) active: usize,
+    pub(super) text: Option<String>,
+    pub(super) rows: Arc<Vec<opalglass::comparison::Row>>,
+    pub(super) scroll: UniformListScrollHandle,
+    pub(super) error: Option<String>,
 }
 impl Workspace {
-    fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.managing || self.checkpointing { return; }
-        let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active)) else { return; };
+    pub(super) fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managing || self.checkpointing {
+            return;
+        }
+        let (Some(vault), Some(tab)) = (&self.vault, self.tabs.get(self.active)) else {
+            return;
+        };
         let root = vault.root.clone();
         let path = tab.path.clone();
         let editor = tab.editor.clone();
@@ -22,25 +29,51 @@ impl Workspace {
         self.message("Loading saved versions…", false, cx);
         self._history = Some(cx.spawn(async move |this, cx| {
             let (read_root, read_path) = (root.clone(), path.clone());
-            let versions = cx.background_executor().spawn(async move { opalglass::history::versions(&read_root, &read_path) }).await;
+            let versions = cx
+                .background_executor()
+                .spawn(async move { opalglass::history::versions(&read_root, &read_path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.vault.as_ref().is_none_or(|v| v.root != root)
-                    || this.tabs.get(this.active).is_none_or(|t| t.editor != editor || t.path != path) { return; }
+                    || this
+                        .tabs
+                        .get(this.active)
+                        .is_none_or(|t| t.editor != editor || t.path != path)
+                {
+                    return;
+                }
                 match versions {
                     Ok(versions) => {
-                        this.history_panel = Some(HistoryPanel { root, path, editor, revision, versions, active: 0, text: None, rows: Arc::new(vec![]), scroll: UniformListScrollHandle::new(), error: None });
+                        this.history_panel = Some(HistoryPanel {
+                            root,
+                            path,
+                            editor,
+                            revision,
+                            versions,
+                            active: 0,
+                            text: None,
+                            rows: Arc::new(vec![]),
+                            scroll: UniformListScrollHandle::new(),
+                            error: None,
+                        });
                         this.select_history(0, cx);
                         this.message("Saved versions loaded", false, cx);
                     }
-                    Err(error) => this.message(format!("Could not load saved versions: {error}"), true, cx),
+                    Err(error) => {
+                        this.message(format!("Could not load saved versions: {error}"), true, cx)
+                    }
                 }
                 cx.notify();
             });
         }));
     }
-    fn select_history(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(panel) = &mut self.history_panel else { return; };
-        let Some(version) = panel.versions.get(index) else { return; };
+    pub(super) fn select_history(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(panel) = &mut self.history_panel else {
+            return;
+        };
+        let Some(version) = panel.versions.get(index) else {
+            return;
+        };
         panel.active = index;
         panel.text = None;
         panel.error = None;
@@ -50,16 +83,34 @@ impl Workspace {
         let editor = panel.editor.clone();
         self._history = Some(cx.spawn(async move |this, cx| {
             let (read_root, read_path) = (root.clone(), path.clone());
-            let result = cx.background_executor().spawn(async move {
-                let text = opalglass::history::read(&read_root, &read_path, &id)?;
-                let rows = opalglass::comparison::compare(&ours, &opalglass::document::normalize(&text));
-                Ok::<_, std::io::Error>((text, rows))
-            }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let text = opalglass::history::read(&read_root, &read_path, &id)?;
+                    let rows = opalglass::comparison::compare(
+                        &ours,
+                        &opalglass::document::normalize(&text),
+                    );
+                    Ok::<_, std::io::Error>((text, rows))
+                })
+                .await;
             let _ = this.update(cx, |this, cx| {
-                let Some(panel) = &mut this.history_panel else { return; };
-                if panel.root != root || panel.path != path || panel.editor != editor || panel.active != index { return; }
+                let Some(panel) = &mut this.history_panel else {
+                    return;
+                };
+                if panel.root != root
+                    || panel.path != path
+                    || panel.editor != editor
+                    || panel.active != index
+                {
+                    return;
+                }
                 match result {
-                    Ok((text, rows)) => { panel.text = Some(text); panel.rows = Arc::new(rows); panel.scroll = UniformListScrollHandle::new(); }
+                    Ok((text, rows)) => {
+                        panel.text = Some(text);
+                        panel.rows = Arc::new(rows);
+                        panel.scroll = UniformListScrollHandle::new();
+                    }
                     Err(e) => panel.error = Some(e.to_string()),
                 }
                 cx.notify();
@@ -67,12 +118,19 @@ impl Workspace {
         }));
         cx.notify();
     }
-    fn restore_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = &self.history_panel else { return; };
-        let Some(text) = &panel.text else { return; };
+    pub(super) fn restore_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = &self.history_panel else {
+            return;
+        };
+        let Some(text) = &panel.text else {
+            return;
+        };
         if panel.editor.read(cx).buffer.revision() != panel.revision {
-            self.history_panel.as_mut().unwrap().error = Some("The note changed while reviewing. Reopen saved versions before restoring.".into());
-            cx.notify(); return;
+            self.history_panel.as_mut().unwrap().error = Some(
+                "The note changed while reviewing. Reopen saved versions before restoring.".into(),
+            );
+            cx.notify();
+            return;
         }
         let text = opalglass::document::normalize(text);
         panel.editor.update(cx, |editor, cx| {
@@ -81,32 +139,54 @@ impl Workspace {
         });
         self.history_panel = None;
         self.set_mode(ViewMode::Source, window, cx);
-        self.message("Saved version restored into the editor. Undo is available.", false, cx);
+        self.message(
+            "Saved version restored into the editor. Undo is available.",
+            false,
+            cx,
+        );
     }
-    fn undo_replacements(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.managing || self.checkpointing { return; }
-        if self.tabs.iter().any(|t| t.dirty(cx)) {
-            self.message("Save open edits before undoing a bulk replacement.", true, cx); return;
+    pub(super) fn undo_replacements(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.managing || self.checkpointing {
+            return;
         }
-        let Some(mut vault) = self.vault.clone() else { return; };
-        self.cancel_indexing(); self.managing = true; self.focus.focus(window);
+        if self.tabs.iter().any(|t| t.dirty(cx)) {
+            self.message(
+                "Save open edits before undoing a bulk replacement.",
+                true,
+                cx,
+            );
+            return;
+        }
+        let Some(mut vault) = self.vault.clone() else {
+            return;
+        };
+        self.cancel_indexing();
+        self.managing = true;
+        self.focus.focus(window);
         self.message("Restoring notes from the last bulk replacement…", false, cx);
         self._management = Some(cx.spawn(async move |this, cx| {
-            let (vault, result) = cx.background_executor().spawn(async move {
-                let result = opalglass::history::undo_latest(&mut vault);
-                (vault, result)
-            }).await;
+            let (vault, result) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = opalglass::history::undo_latest(&mut vault);
+                    (vault, result)
+                })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.managing = false;
                 this.apply_scan(vault, this.revision, cx);
                 match result {
-                    Ok(count) => this.message(format!("Restored {count} note(s) from the last bulk replacement"), false, cx),
+                    Ok(count) => this.message(
+                        format!("Restored {count} note(s) from the last bulk replacement"),
+                        false,
+                        cx,
+                    ),
                     Err(error) => this.message(error, true, cx),
                 }
             });
         }));
     }
-    fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_history(&self, cx: &mut Context<Self>) -> AnyElement {
         let panel = self.history_panel.as_ref().unwrap();
         let rows = panel.rows.clone();
         div().absolute().inset_0().occlude().bg(rgba(0x05070bb0)).p_6().flex().items_center().justify_center()
