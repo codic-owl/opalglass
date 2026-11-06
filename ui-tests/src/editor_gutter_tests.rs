@@ -25,12 +25,21 @@ fn line_numbers_keep_padding_across_digit_counts_wrapping_and_font_changes(
         for font_size in [10., 28.] {
             view.update(cx, |editor, cx| editor.set_preferences(font_size, true, cx));
             cx.run_until_parked();
+            // Preferences preserve the scroll anchor, so reveal the target again
+            // after reflow before inspecting its actual painted geometry.
+            view.update(cx, |editor, cx| editor.reveal_cursor(cx));
+            cx.run_until_parked();
             view.read_with(cx, |editor, _| {
                 let row = editor
                     .visible_rows
                     .iter()
                     .find(|r| r.range.end == text.len())
-                    .unwrap();
+                    .unwrap_or_else(|| panic!(
+                        "last row not painted: count={count} font={font_size} visible={:?} scroll={:?} source_rows={}",
+                        editor.visible_rows.iter().map(|row| row.range.clone()).collect::<Vec<_>>(),
+                        editor.source_list.logical_scroll_top(),
+                        editor.source_ranges.len(),
+                    ));
                 let number = row.number_bounds.expect("physical line number is painted");
                 assert!(
                     number.left() >= editor.bounds.left() + px(PAD),

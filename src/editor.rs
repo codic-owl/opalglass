@@ -15,6 +15,7 @@ struct Row {
 #[derive(Clone)]
 struct SourceRow {
     #[cfg(test)]
+    #[allow(dead_code, reason = "Read by the separate native UI test harness")]
     number_bounds: Option<Bounds<Pixels>>,
     range: Range<usize>,
     origin: Point<Pixels>,
