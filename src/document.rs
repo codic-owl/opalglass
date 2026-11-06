@@ -35,6 +35,14 @@ pub fn chunks(text: &str, limit: usize) -> Vec<std::ops::Range<usize>> {
     if text.len() <= limit {
         return std::iter::once(0..text.len()).collect();
     }
+    // ASCII boundaries are grapheme boundaries except between CR and LF.
+    // Preserve the exact index while avoiding a scalar walk of huge plain lines.
+    if limit > 0 && text.is_ascii() && !text.contains('\r') {
+        return (0..text.len())
+            .step_by(limit)
+            .map(|start| start..(start + limit).min(text.len()))
+            .collect();
+    }
     let mut result = Vec::new();
     let mut start = 0;
     for (index, _) in text.grapheme_indices(true) {
@@ -95,6 +103,15 @@ pub fn opening_source_rows(text: &str) -> (Vec<std::ops::Range<usize>>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ascii_fast_chunks_keep_crlf_graphemes_intact() {
+        let text = format!("{}\r\nend", "x".repeat(255));
+        assert_eq!(chunks(&text, 256), vec![0..257, 257..260]);
+        assert_eq!(
+            chunks(&"x".repeat(1025), 256),
+            vec![0..256, 256..512, 512..768, 768..1024, 1024..1025]
+        );
+    }
     #[test]
     fn opening_rows_are_an_exact_bounded_prefix_even_for_long_unicode_lines() {
         for text in [

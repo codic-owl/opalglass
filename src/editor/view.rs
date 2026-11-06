@@ -6,6 +6,8 @@ impl Render for Editor {
         {
             self.render_count += 1;
         }
+        self.source_flow
+            .begin_frame(self.buffer.revision(), self.source_width, self.font_size);
         self.prepare_source();
         let entity = cx.entity();
         let content = if self.single_line {
@@ -34,6 +36,11 @@ impl Render for Editor {
                                 if editor.source_width != width {
                                     let had_width = editor.source_width > px(0.);
                                     editor.source_width = width;
+                                    editor.source_flow.begin_frame(
+                                        editor.buffer.revision(),
+                                        width,
+                                        editor.font_size,
+                                    );
                                     editor.cached_rows.clear();
                                     // The initial list is already unmeasured. Rebuilding
                                     // every item again here doubles first-frame work.
@@ -52,6 +59,7 @@ impl Render for Editor {
                         move |bounds, _, window, cx| {
                             input_entity.update(cx, |editor, cx| {
                                 editor.publish_scroll_anchor(cx);
+                                editor.start_source_flow_index(cx);
                                 window.handle_input(
                                     &editor.focus,
                                     ElementInputHandler::new(bounds, cx.entity()),
@@ -94,6 +102,7 @@ impl Render for Editor {
             .overflow_hidden()
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
+            .on_scroll_wheel(cx.listener(|this, _, _, _| this.cancel_source_flow_reveal()))
             .on_key_down(cx.listener(Self::key))
             .on_mouse_down(
                 MouseButton::Left,

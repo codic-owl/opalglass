@@ -394,7 +394,15 @@ fn long_physical_line_keeps_caret_and_unicode_selection_visible(cx: &mut TestApp
         assert_eq!(editor.buffer.selected(), "e\u{301} ");
         let point = editor.point_for(editor.buffer.cursor());
         assert!(point.y >= editor.bounds.top() && point.y < editor.bounds.bottom());
-        assert!(editor.cached_rows.iter().all(|r| r.range.len() < 300));
+        // Ownership cuts now follow native wraps rather than byte256. Each
+        // shaped range is still bounded by one index chunk plus the viewport
+        // lookahead and this fixture's largest (4-byte) grapheme.
+        let ownership_limit = 256 + (f32::from(editor.source_width) * 4.).max(512.) as usize + 4;
+        assert!(editor.cached_rows.len() <= 256);
+        for row in &editor.cached_rows {
+            assert!(row.range.len() <= ownership_limit);
+            assert_eq!(row.projection.text.as_str(), &text[row.range.clone()]);
+        }
     });
 }
 

@@ -45,4 +45,7 @@ codegen-units = 1
 
 [workspace]
 members = ["crates/search"]
-exclude = ["ui-tests", "prototypes/tantivy-search"]
+exclude = ["ui-tests", "prototypes/tantivy-search", "vendor/gpui"]
+
+[patch."https://github.com/zed-industries/zed"]
+gpui = { path = "vendor/gpui" }

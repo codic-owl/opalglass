@@ -27,3 +27,7 @@ mod gutter_tests;
 #[cfg(test)]
 #[path = "editor_task_tests.rs"]
 mod task_tests;
+
+#[cfg(test)]
+#[path = "editor_wrap_tests.rs"]
+mod wrap_tests;

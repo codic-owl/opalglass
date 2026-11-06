@@ -124,13 +124,11 @@ impl Editor {
             self.pending_scroll = None;
         }
         if self.reveal {
-            let physical = self
-                .source_ranges
-                .partition_point(|r| r.start <= self.buffer.cursor())
-                .saturating_sub(1);
+            let physical = self.source_index_for(self.buffer.cursor());
             let index = self.visibility.rows.list_index(physical);
             let visible = self.visible_rows.iter().any(|r| {
-                r.range.start == self.source_ranges[physical].start
+                r.range.start <= self.buffer.cursor()
+                    && self.buffer.cursor() <= r.range.end
                     && r.origin.y >= self.bounds.top()
                     && r.origin.y + r.line_height <= self.bounds.bottom()
             });

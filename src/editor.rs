@@ -91,6 +91,7 @@ pub struct Editor {
     source_width: Pixels,
     visible_rows: Vec<SourceRow>,
     cached_rows: Vec<CachedRow>,
+    source_flow: source_flow::SourceFlow,
     syntax_version: u64,
     pub source_links: Vec<Range<usize>>,
     pub source_syntax: Arc<Vec<opalglass::syntax::Span>>,
@@ -153,6 +154,7 @@ impl Editor {
             source_width: px(0.),
             visible_rows: Vec::new(),
             cached_rows: Vec::new(),
+            source_flow: source_flow::SourceFlow::default(),
             syntax_version: u64::MAX,
             source_links: Vec::new(),
             source_syntax: Arc::new(Vec::new()),
@@ -171,6 +173,7 @@ impl Editor {
         self.source_requested_revision = u64::MAX;
         self._source_prepare = None;
         self.cached_rows.clear();
+        self.source_flow = source_flow::SourceFlow::default();
         self.live_lines.clear();
         self.live_context = None;
         self.visibility = visibility::SourceVisibility::default();
@@ -243,6 +246,7 @@ impl Editor {
             return;
         }
         self.live_preview = enabled;
+        self.source_flow = source_flow::SourceFlow::default();
         self.live_revealed = None;
         self.live_lines.clear();
         self.cached_rows.clear();
@@ -258,6 +262,7 @@ impl Editor {
         }
     }
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.cancel_source_flow_reveal();
         self.pending_scroll = None;
         self.reveal = true;
         cx.notify();
@@ -455,3 +460,9 @@ mod visibility;
 
 #[path = "editor/callout_view.rs"]
 mod callout_view;
+
+#[path = "editor/source_flow.rs"]
+mod source_flow;
+
+#[path = "editor/source_flow_index.rs"]
+mod source_flow_index;

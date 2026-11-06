@@ -18,12 +18,14 @@ impl Editor {
         scroll: opalglass::navigation::ScrollPosition,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_source_flow_reveal();
         self.buffer.select(anchor, cursor);
         self.pending_scroll = Some(scroll);
         self.reveal = false;
         cx.notify();
     }
     pub fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        self.cancel_source_flow_reveal();
         self.source_list.scroll_by(delta);
         self.reveal = false;
         cx.notify();
@@ -31,8 +33,13 @@ impl Editor {
     pub(super) fn publish_scroll_anchor(&mut self, cx: &mut Context<Self>) {
         let offset = self.source_list.logical_scroll_top();
         let physical = self.visibility.rows.row(offset.item_ix);
-        let Some(range) = self.source_ranges.get(physical) else {
+        let Some(raw) = self.source_ranges.get(physical) else {
             return;
+        };
+        let range = if self.live_preview {
+            raw
+        } else {
+            self.source_flow.cached(physical).unwrap_or(raw)
         };
         let height = self
             .cached_rows
@@ -59,12 +66,16 @@ impl Editor {
     }
     pub(super) fn point_for(&self, byte: usize) -> Point<Pixels> {
         if !self.single_line {
-            if let Some(row) = self
-                .visible_rows
-                .iter()
-                .rev()
-                .find(|r| r.range.start <= byte && byte <= r.range.end)
-            {
+            let contains = |r: &&SourceRow| r.range.start <= byte && byte <= r.range.end;
+            let mut rows = self.visible_rows.iter();
+            // Match WrappedLine's upstream affinity at a soft-wrap boundary,
+            // including boundaries that happen to divide ownership items.
+            let row = if self.live_preview {
+                rows.rfind(contains)
+            } else {
+                rows.find(contains)
+            };
+            if let Some(row) = row {
                 return row.origin
                     + row
                         .line
@@ -132,11 +143,11 @@ impl Editor {
     ) {
         let height = if !self.single_line {
             self.prepare_source();
-            let index = self
-                .source_ranges
-                .partition_point(|r| r.start <= self.buffer.cursor())
-                .saturating_sub(1);
-            self.shaped_source_row(index, window, cx).line_height
+            let index = self.source_index_for(self.buffer.cursor());
+            let Some(row) = self.shaped_source_row(index, window, cx) else {
+                return;
+            };
+            row.line_height
         } else {
             px(LINE)
         };
@@ -151,18 +162,24 @@ impl Editor {
     ) {
         self.prepare_source();
         let cursor = self.buffer.cursor();
-        let mut physical = self
+        let original = self
             .source_ranges
             .partition_point(|r| r.start <= cursor)
             .saturating_sub(1);
+        if self.source_display_range(original, window, cx).is_none() {
+            return;
+        }
+        let physical = self.source_index_for(cursor);
         let mut index = self.visibility.rows.list_index(physical);
-        physical = self.visibility.rows.row(index);
-        let mut line = self.shaped_source_row(physical, window, cx);
+        let physical = self.visibility.rows.row(index);
+        let Some(mut line) = self.shaped_source_row(physical, window, cx) else {
+            return;
+        };
         let pos = line
             .line
             .position_for_index(
                 line.projection
-                    .display_index(cursor.saturating_sub(self.source_ranges[physical].start)),
+                    .display_index(cursor.saturating_sub(line.range.start)),
                 line.line_height,
             )
             .unwrap_or_default();
@@ -176,9 +193,13 @@ impl Editor {
                 .height
                 .max(line.line_height);
             if y < px(0.) && index > 0 {
-                index -= 1;
-                physical = self.visibility.rows.row(index);
-                line = self.shaped_source_row(physical, window, cx);
+                let Some((previous_index, _, previous)) =
+                    self.adjacent_source_row(index, false, window, cx)
+                else {
+                    return;
+                };
+                index = previous_index;
+                line = previous;
                 y += line
                     .line
                     .size(line.line_height)
@@ -186,11 +207,14 @@ impl Editor {
                     .max(line.line_height);
             } else if y >= height && index + 1 < self.visibility.rows.len() {
                 y -= height;
-                index += 1;
-                physical = self.visibility.rows.row(index);
-                line = self.shaped_source_row(physical, window, cx);
+                let Some((next_index, _, next)) = self.adjacent_source_row(index, true, window, cx)
+                else {
+                    return;
+                };
+                index = next_index;
+                line = next;
             } else {
-                let range = &self.source_ranges[physical];
+                let range = &line.range;
                 let offset = if y < px(0.) {
                     0
                 } else if y >= height {
@@ -214,14 +238,43 @@ impl Editor {
         index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> CachedRow {
+    ) -> Option<CachedRow> {
+        let range = self.source_display_range(index, window, cx)?;
         let _ = self.source_row(index, window, cx);
         self.cached_rows
             .iter()
             .rev()
-            .find(|r| r.range == self.source_ranges[index])
-            .unwrap()
-            .clone()
+            .find(|r| r.range == range)
+            .cloned()
+    }
+    fn adjacent_source_row(
+        &mut self,
+        mut index: usize,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, usize, CachedRow)> {
+        loop {
+            index = if down {
+                index.checked_add(1)?
+            } else {
+                index.checked_sub(1)?
+            };
+            if index >= self.visibility.rows.len() {
+                return None;
+            }
+            let physical = self.visibility.rows.row(index);
+            if let Some(row) = self.shaped_source_row(physical, window, cx) {
+                return Some((index, physical, row));
+            }
+            if self
+                .source_flow
+                .cached(physical)
+                .is_none_or(|range| !range.is_empty())
+            {
+                return None;
+            }
+        }
     }
     pub fn place_drop_caret(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         if self.bounds.contains(&position) {

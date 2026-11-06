@@ -8,7 +8,12 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let range = self.source_ranges[index].clone();
+        let Some(range) = self.source_display_range(index, window, cx) else {
+            return div().w_full().h(px(LINE)).into_any_element();
+        };
+        if range.is_empty() && !self.source_ranges[index].is_empty() {
+            return div().w_full().h(px(0.)).into_any_element();
+        }
         let selection = self.buffer.selection();
         let selection = selection.start.clamp(range.start, range.end)
             ..selection.end.clamp(range.start, range.end);
@@ -384,10 +389,7 @@ impl Editor {
                         let _ = placeholder.paint(origin, line_height, window, cx);
                     }
                     let cursor = editor.buffer.cursor();
-                    let cursor_row = editor
-                        .source_ranges
-                        .partition_point(|r| r.start <= cursor)
-                        .saturating_sub(1);
+                    let cursor_row = editor.source_index_for(cursor);
                     if editor.focus.is_focused(window) && cursor_row == index {
                         let pos = origin
                             + line
