@@ -1,5 +1,6 @@
 use crate::editor::Editor;
 use crate::theme::{MISSING_LINK, MONO_FONT, UI_FONT, missing_link_underline};
+use explorer_menus::{ExplorerAction, ExplorerMenu};
 use gpui::{prelude::*, *};
 use opalglass::{
     buffer::Buffer,
@@ -47,12 +48,6 @@ enum ViewMode {
     Source,
     Split,
     Preview,
-}
-
-struct ExplorerMenu {
-    target: Option<PathBuf>,
-    position: Point<Pixels>,
-    selected: usize,
 }
 
 #[derive(Clone)]
@@ -304,6 +299,9 @@ mod document;
 mod document_view;
 #[path = "workspace/explorer.rs"]
 mod explorer;
+#[path = "workspace/explorer_menus.rs"]
+mod explorer_menus;
+
 #[path = "workspace/file_actions.rs"]
 mod file_actions;
 #[path = "workspace/find.rs"]

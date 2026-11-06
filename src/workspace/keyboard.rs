@@ -137,9 +137,13 @@ impl Workspace {
         }
         if self.explorer_menu.is_some() {
             let action = if command && key == "n" {
-                Some(if shift { Modal::NewFolder } else { Modal::New })
+                Some(if shift {
+                    ExplorerAction::NewFolder
+                } else {
+                    ExplorerAction::NewNote
+                })
             } else if !command && key == "f2" {
-                Some(Modal::Rename)
+                Some(ExplorerAction::Rename)
             } else {
                 None
             };
