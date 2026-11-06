@@ -310,28 +310,17 @@ impl Editor {
                             rgb(0x3b4254),
                         ));
                     }
-                    if editor.line_numbers && editor.buffer.line_start(range.start) == range.start {
-                        let number = editor.buffer.line_number(range.start).to_string();
-                        let number_line = window.text_system().shape_line(
-                            number.clone().into(),
-                            px(12.),
-                            &[TextRun {
-                                len: number.len(),
-                                font: font(MONO_FONT),
-                                color: rgb(if active { 0xb8a5fa } else { 0x7d879c }).into(),
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            }],
-                            None,
-                        );
-                        let number_origin = point(
-                            editor.bounds.left() + px(PAD + gutter - 16.) - number_line.width,
-                            bounds.top(),
-                        );
-                        let _ = number_line.paint(number_origin, line_height, window, cx);
-                    }
+                    let _number_bounds = editor.paint_line_number(
+                        range.start,
+                        bounds,
+                        line_height,
+                        active,
+                        window,
+                        cx,
+                    );
                     editor.visible_rows.push(SourceRow {
+                        #[cfg(test)]
+                        number_bounds: _number_bounds,
                         range: range.clone(),
                         origin,
                         line: line.clone(),

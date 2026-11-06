@@ -5,7 +5,6 @@ use std::{ops::Range, sync::Arc};
 
 const LINE: f32 = 25.;
 const PAD: f32 = 20.;
-const GUTTER: f32 = 64.;
 
 struct Row {
     start: usize,
@@ -15,6 +14,8 @@ struct Row {
 
 #[derive(Clone)]
 struct SourceRow {
+    #[cfg(test)]
+    number_bounds: Option<Bounds<Pixels>>,
     range: Range<usize>,
     origin: Point<Pixels>,
     line: WrappedLine,
@@ -213,9 +214,6 @@ impl Editor {
     }
     pub fn caret_position(&self) -> Point<Pixels> {
         self.point_for(self.buffer.cursor())
-    }
-    fn gutter(&self) -> f32 {
-        if self.line_numbers { GUTTER } else { PAD }
     }
     pub fn set_preferences(&mut self, font_size: f32, line_numbers: bool, cx: &mut Context<Self>) {
         if self.single_line || (self.font_size == font_size && self.line_numbers == line_numbers) {
@@ -430,6 +428,9 @@ impl Focusable for Editor {
         self.focus.clone()
     }
 }
+
+#[path = "editor/gutter.rs"]
+mod gutter;
 
 #[path = "editor/input.rs"]
 mod input;

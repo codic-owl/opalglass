@@ -1,7 +1,9 @@
 use super::*;
 
 #[gpui::test]
-fn scrolling_only_renders_the_changed_pane_for_short_and_long_notes(cx: &mut TestAppContext) {
+fn unlocked_scrolling_only_renders_the_changed_pane_for_short_and_long_notes(
+    cx: &mut TestAppContext,
+) {
     let folder = tempfile::tempdir().unwrap();
     for (name, lines) in [("A", 50), ("B", 20_000)] {
         std::fs::write(
@@ -12,6 +14,9 @@ fn scrolling_only_renders_the_changed_pane_for_short_and_long_notes(cx: &mut Tes
     }
     let (view, cx) =
         cx.add_window_view(|window, cx| Workspace::new(Some(folder.path().into()), window, cx));
+    // This regression covers independent panes; split scrolling now starts locked.
+    click(cx, "lock-reading-scroll");
+    view.read_with(cx, |this, _| assert!(!this.scroll_locked));
     for name in ["A.md", "B.md"] {
         view.update_in(cx, |this, window, cx| {
             this.open_note(name.into(), window, cx)

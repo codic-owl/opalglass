@@ -194,7 +194,7 @@ impl Workspace {
             tree_focus: cx.focus_handle(),
             resizing_sidebar: false,
             split_ratio: 0.5,
-            scroll_locked: false,
+            scroll_locked: true,
             live_preview: preferences.default_live_preview,
             split_bounds: Rc::new(Cell::new(Bounds::default())),
             split_drag_offset: None,

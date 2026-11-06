@@ -212,8 +212,9 @@ runtime verification remain [release gates](<V1 TODO.md>).
   grapheme-aware deletion, undo/redo, and GPUI input-method integration.
 - Source, split, and reading views with a native Markdown preview, icon controls
   with hover labels, and a draggable divider in split view. The reading pane’s
-  lock button links scrolling to the editor using Markdown source positions;
-  unlock it to scroll the two panes independently.
+  scrolling starts locked to the editor using Markdown source positions;
+  use the lock button to scroll the two panes independently. The toggle applies
+  for the current app session.
 - Live Preview editing in Source and Split: use the pencil icon or Ctrl Shift E
   to toggle formatted Markdown. Inactive lines render headings, emphasis, links,
   quotes, lists, tasks, and code; the line being edited or selected shows its
@@ -279,6 +280,9 @@ contents separately when the original file conflicts.
   unchecked. Enter on an empty item exits the list. Tab / Shift Tab indent or
   outdent list items and selected lines. Shift Enter inserts a plain newline.
   Formatting shortcuts and commands preserve Markdown and undo history.
+  Task checkboxes use list syntax: `- [ ] Todo` and `- [x] Done`. Bare `[ ]`
+  stays ordinary text. Live Preview formats inactive task lines; use Ctrl Enter
+  on a task to toggle it, or click its checkbox in Reading.
 - **Outline:** the outline icon or Ctrl Shift O opens clickable headings. Selecting
   a heading jumps both the editor and reading pane to that section.
   Links also support formatted and Setext headings, nested sections such as

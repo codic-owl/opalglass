@@ -160,7 +160,7 @@ fn mixed_editing_preview_keeps_split_scroll_and_mode_transitions_on_source_ancho
         this.set_mode(ViewMode::Split, w, cx);
     });
     cx.run_until_parked();
-    click(cx, "lock-reading-scroll");
+    view.read_with(cx, |this, _| assert!(this.scroll_locked));
     let section = text.find("# Section 20\n").unwrap();
     view.update(cx, |this, cx| {
         this.tabs[this.active]

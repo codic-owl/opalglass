@@ -20,7 +20,9 @@ mod remote_network;
 mod rendering;
 mod saving;
 mod search;
+mod split_scroll;
 mod tables;
+mod tasks;
 mod virtualization;
 mod workflows;
 

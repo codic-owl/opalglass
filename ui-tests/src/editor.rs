@@ -19,3 +19,11 @@ mod visibility_tests;
 #[cfg(test)]
 #[path = "editor_block_markers_tests.rs"]
 mod block_markers_tests;
+
+#[cfg(test)]
+#[path = "editor_gutter_tests.rs"]
+mod gutter_tests;
+
+#[cfg(test)]
+#[path = "editor_task_tests.rs"]
+mod task_tests;
